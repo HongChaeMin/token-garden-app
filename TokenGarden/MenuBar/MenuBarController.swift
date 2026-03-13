@@ -23,7 +23,14 @@ class MenuBarController: ObservableObject {
     init(
         statusItem: NSStatusItem,
         initialTodayTokens: Int = 0,
-        animationEnabled: @escaping () -> Bool = { UserDefaults.standard.bool(forKey: "animationEnabled") },
+        animationEnabled: @escaping () -> Bool = {
+            // UserDefaults.bool returns false if key doesn't exist,
+            // so we check if the key was ever set. Default to true.
+            if UserDefaults.standard.object(forKey: "animationEnabled") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "animationEnabled")
+        },
         displayMode: @escaping () -> String = { UserDefaults.standard.string(forKey: "displayMode") ?? MenuBarDisplayMode.iconOnly.rawValue }
     ) {
         self.statusItem = statusItem
