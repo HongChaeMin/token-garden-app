@@ -15,9 +15,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        // SwiftData — lightweight migration for new models
+        // SwiftData — explicit store path + lightweight migration
         let schema = Schema([DailyUsage.self, ProjectUsage.self, SessionUsage.self])
-        let config = ModelConfiguration(schema: schema)
+        let storeURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("TokenGarden", isDirectory: true)
+            .appendingPathComponent("TokenGarden.store")
+        try? FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let config = ModelConfiguration("TokenGarden", schema: schema, url: storeURL)
         modelContainer = try! ModelContainer(for: schema, configurations: [config])
         dataStore = TokenDataStore(modelContainer: modelContainer)
 
