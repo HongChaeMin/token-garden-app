@@ -16,7 +16,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         // SwiftData
-        modelContainer = try! ModelContainer(for: DailyUsage.self, ProjectUsage.self)
+        let config = ModelConfiguration(
+            "TokenGarden",
+            url: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("TokenGarden", isDirectory: true)
+                .appendingPathComponent("TokenGarden.store")
+        )
+        let supportDir = config.url.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: supportDir, withIntermediateDirectories: true)
+        modelContainer = try! ModelContainer(for: DailyUsage.self, ProjectUsage.self, configurations: config)
         dataStore = TokenDataStore(modelContainer: modelContainer)
 
         // Status Item — fixed width to prevent menu bar shifting during animation

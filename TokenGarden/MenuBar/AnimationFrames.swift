@@ -1,5 +1,6 @@
 import AppKit
 
+@MainActor
 enum AnimationFrames {
     private static let size = NSSize(width: 18, height: 18)
 
