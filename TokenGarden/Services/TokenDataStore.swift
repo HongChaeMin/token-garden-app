@@ -5,6 +5,8 @@ import SwiftData
 class TokenDataStore: ObservableObject {
     private let modelContainer: ModelContainer
     private let modelContext: ModelContext
+    private var pendingSaveCount = 0
+    private static let saveInterval = 10
 
     init(modelContainer: ModelContainer) {
         self.modelContainer = modelContainer
@@ -45,7 +47,38 @@ class TokenDataStore: ObservableObject {
             }
         }
 
-        try? modelContext.save()
+        // Session tracking
+        if let sessionId = event.sessionId {
+            let sessionDescriptor = FetchDescriptor<SessionUsage>(
+                predicate: #Predicate { $0.sessionId == sessionId }
+            )
+            if let session = try? modelContext.fetch(sessionDescriptor).first {
+                session.totalTokens += event.totalTokens
+                session.lastTime = event.timestamp
+            } else {
+                let session = SessionUsage(
+                    sessionId: sessionId,
+                    projectName: event.projectName ?? "Unknown",
+                    startTime: event.timestamp
+                )
+                session.totalTokens = event.totalTokens
+                session.lastTime = event.timestamp
+                modelContext.insert(session)
+            }
+        }
+
+        pendingSaveCount += 1
+        if pendingSaveCount >= Self.saveInterval {
+            try? modelContext.save()
+            pendingSaveCount = 0
+        }
+    }
+
+    func flush() {
+        if pendingSaveCount > 0 {
+            try? modelContext.save()
+            pendingSaveCount = 0
+        }
     }
 
     func fetchDailyUsages(from startDate: Date, to endDate: Date) -> [DailyUsage] {
@@ -56,5 +89,31 @@ class TokenDataStore: ObservableObject {
             sortBy: [SortDescriptor(\.date)]
         )
         return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    /// Returns token totals for the last 3 hours: [h-2, h-1, h]
+    func fetchHourlyBuckets() -> [Int] {
+        let cal = Calendar.current
+        let now = Date()
+        let currentHour = cal.component(.hour, from: now)
+        let today = cal.startOfDay(for: now)
+
+        // Build hour start/end for last 3 hours
+        var buckets = [0, 0, 0]
+        for i in 0..<3 {
+            let hour = currentHour - 2 + i
+            guard let hourStart = cal.date(bySettingHour: hour, minute: 0, second: 0, of: today),
+                  let hourEnd = cal.date(bySettingHour: hour, minute: 59, second: 59, of: today) else { continue }
+
+            let descriptor = FetchDescriptor<SessionUsage>(
+                predicate: #Predicate<SessionUsage> { session in
+                    session.lastTime >= hourStart && session.startTime <= hourEnd
+                }
+            )
+            if let sessions = try? modelContext.fetch(descriptor) {
+                buckets[i] = sessions.reduce(0) { $0 + $1.totalTokens }
+            }
+        }
+        return buckets
     }
 }

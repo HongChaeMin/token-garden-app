@@ -5,7 +5,7 @@ import Foundation
 
 @Test @MainActor func recordTokenEvent() async throws {
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, configurations: config)
+    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, SessionUsage.self, configurations: config)
     let store = TokenDataStore(modelContainer: container)
 
     let event = TokenEvent(
@@ -16,10 +16,12 @@ import Foundation
         cacheReadTokens: 30,
         model: "claude-opus-4-6",
         projectName: "my-project",
+        sessionId: "session-1",
         source: "claude-code"
     )
 
     store.record(event)
+    store.flush()
 
     let context = ModelContext(container)
     let descriptor = FetchDescriptor<DailyUsage>()
@@ -34,22 +36,23 @@ import Foundation
 
 @Test @MainActor func recordMultipleEventsAccumulate() async throws {
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, configurations: config)
+    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, SessionUsage.self, configurations: config)
     let store = TokenDataStore(modelContainer: container)
 
     let event1 = TokenEvent(
         timestamp: Date(), inputTokens: 100, outputTokens: 50,
         cacheCreationTokens: 0, cacheReadTokens: 0,
-        model: "claude-opus-4-6", projectName: "project-a", source: "claude-code"
+        model: "claude-opus-4-6", projectName: "project-a", sessionId: "session-1", source: "claude-code"
     )
     let event2 = TokenEvent(
         timestamp: Date(), inputTokens: 200, outputTokens: 100,
         cacheCreationTokens: 0, cacheReadTokens: 0,
-        model: "claude-opus-4-6", projectName: "project-a", source: "claude-code"
+        model: "claude-opus-4-6", projectName: "project-a", sessionId: "session-1", source: "claude-code"
     )
 
     store.record(event1)
     store.record(event2)
+    store.flush()
 
     let context = ModelContext(container)
     let descriptor = FetchDescriptor<DailyUsage>()
@@ -63,7 +66,7 @@ import Foundation
 
 @Test @MainActor func fetchDailyUsagesForRange() async throws {
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, configurations: config)
+    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, SessionUsage.self, configurations: config)
     let store = TokenDataStore(modelContainer: container)
 
     let calendar = Calendar.current
@@ -73,17 +76,47 @@ import Foundation
     let event1 = TokenEvent(
         timestamp: today, inputTokens: 100, outputTokens: 50,
         cacheCreationTokens: 0, cacheReadTokens: 0,
-        model: nil, projectName: nil, source: "claude-code"
+        model: nil, projectName: nil, sessionId: nil, source: "claude-code"
     )
     let event2 = TokenEvent(
         timestamp: yesterday, inputTokens: 200, outputTokens: 100,
         cacheCreationTokens: 0, cacheReadTokens: 0,
-        model: nil, projectName: nil, source: "claude-code"
+        model: nil, projectName: nil, sessionId: nil, source: "claude-code"
     )
 
     store.record(event1)
     store.record(event2)
+    store.flush()
 
     let results = store.fetchDailyUsages(from: yesterday, to: today)
     #expect(results.count == 2)
+}
+
+@Test @MainActor func recordSessionUsage() async throws {
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, SessionUsage.self, configurations: config)
+    let store = TokenDataStore(modelContainer: container)
+
+    let event1 = TokenEvent(
+        timestamp: Date(), inputTokens: 100, outputTokens: 50,
+        cacheCreationTokens: 0, cacheReadTokens: 0,
+        model: "claude-opus-4-6", projectName: "my-project", sessionId: "session-abc", source: "claude-code"
+    )
+    let event2 = TokenEvent(
+        timestamp: Date(), inputTokens: 200, outputTokens: 100,
+        cacheCreationTokens: 0, cacheReadTokens: 0,
+        model: "claude-opus-4-6", projectName: "my-project", sessionId: "session-abc", source: "claude-code"
+    )
+
+    store.record(event1)
+    store.record(event2)
+    store.flush()
+
+    let context = ModelContext(container)
+    let descriptor = FetchDescriptor<SessionUsage>()
+    let sessions = try context.fetch(descriptor)
+    #expect(sessions.count == 1)
+    #expect(sessions[0].sessionId == "session-abc")
+    #expect(sessions[0].totalTokens == 450)
+    #expect(sessions[0].projectName == "my-project")
 }

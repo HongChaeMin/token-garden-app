@@ -3,6 +3,12 @@ import Foundation
 struct ClaudeCodeLogParser: TokenLogParser {
     let name = "claude-code"
 
+    private static nonisolated(unsafe) let dateFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     var watchPaths: [String] {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return ["\(home)/.claude"]
@@ -27,10 +33,8 @@ struct ClaudeCodeLogParser: TokenLogParser {
         let model = message["model"] as? String
         let cwd = json["cwd"] as? String
         let projectName = cwd.flatMap { URL(fileURLWithPath: $0).lastPathComponent }
-
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let timestamp = formatter.date(from: timestampStr) ?? Date()
+        let sessionId = json["sessionId"] as? String
+        let timestamp = Self.dateFormatter.date(from: timestampStr) ?? Date()
 
         return TokenEvent(
             timestamp: timestamp,
@@ -40,6 +44,7 @@ struct ClaudeCodeLogParser: TokenLogParser {
             cacheReadTokens: cacheRead,
             model: model,
             projectName: projectName,
+            sessionId: sessionId,
             source: name
         )
     }

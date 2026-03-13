@@ -165,6 +165,9 @@ struct PopoverView: View {
                         selectedDayLabel: selectedDayLabel
                     )
                     .padding(.horizontal, 12)
+
+                    SessionListView()
+                        .padding(.horizontal, 12)
                 }
                 .padding(.bottom, 12)
             }

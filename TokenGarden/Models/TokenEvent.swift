@@ -8,6 +8,7 @@ struct TokenEvent: Sendable {
     let cacheReadTokens: Int
     let model: String?
     let projectName: String?
+    let sessionId: String?
     let source: String
 
     var totalTokens: Int {

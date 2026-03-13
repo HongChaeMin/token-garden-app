@@ -11,6 +11,7 @@ import Foundation
         cacheReadTokens: 30,
         model: "claude-opus-4-6",
         projectName: "my-project",
+        sessionId: "test-session-123",
         source: "claude-code"
     )
     #expect(event.totalTokens == 150)  // input + output only

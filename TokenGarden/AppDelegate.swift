@@ -15,8 +15,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        // SwiftData
-        modelContainer = try! ModelContainer(for: DailyUsage.self, ProjectUsage.self)
+        // SwiftData — lightweight migration for new models
+        let schema = Schema([DailyUsage.self, ProjectUsage.self, SessionUsage.self])
+        let config = ModelConfiguration(schema: schema)
+        modelContainer = try! ModelContainer(for: schema, configurations: [config])
         dataStore = TokenDataStore(modelContainer: modelContainer)
 
         // Status Item — fixed width to prevent menu bar shifting during animation
@@ -32,7 +34,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             from: Calendar.current.startOfDay(for: Date()),
             to: Date()
         ).first?.totalTokens ?? 0
-        menuBarController = MenuBarController(statusItem: statusItem, initialTodayTokens: todayTokens)
+        let hourlyBuckets = dataStore.fetchHourlyBuckets()
+        menuBarController = MenuBarController(statusItem: statusItem, initialTodayTokens: todayTokens, initialHourlyBuckets: hourlyBuckets)
 
         // Animation timer — runs forever, .common mode so it works during popover interaction
         animationTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -42,15 +45,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         RunLoop.main.add(animationTimer, forMode: .common)
 
-        // Popover
+        // Popover — transient behavior closes on outside click
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 320, height: 400)
         popover.behavior = .transient
 
         let popoverView = PopoverView()
             .environmentObject(menuBarController)
             .modelContainer(modelContainer)
-        popover.contentViewController = NSHostingController(rootView: popoverView)
+        let hostingController = NSHostingController(rootView: popoverView)
+        hostingController.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = hostingController
 
         // Log Parser + Watcher
         let parser = ClaudeCodeLogParser()
@@ -61,6 +65,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         logWatcher.backfill()
+        dataStore.flush()
         logWatcher.start()
     }
 
