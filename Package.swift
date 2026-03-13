@@ -9,6 +9,9 @@ let package = Package(
             name: "TokenGarden",
             path: "TokenGarden",
             exclude: ["Info.plist"],
+            resources: [
+                .process("Assets.xcassets"),
+            ],
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-sectcreate",

@@ -51,7 +51,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Popover — transient behavior closes on outside click
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 320, height: 480)
+        popover.contentSize = NSSize(width: 320, height: 580)
         popover.behavior = .transient
 
         let popoverView = PopoverView()
@@ -62,6 +62,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Log Parser + Watcher
         let parser = ClaudeCodeLogParser()
         logWatcher = LogWatcher(watchPaths: parser.watchPaths) { [weak self] line in
+            // Detect session end (Stop hook event)
+            if let endedSessionId = parser.parseSessionEnd(logLine: line) {
+                self?.dataStore.endSession(sessionId: endedSessionId)
+                return
+            }
             guard let event = parser.parse(logLine: line) else { return }
             self?.dataStore.record(event)
             self?.menuBarController.onTokenEvent(event)

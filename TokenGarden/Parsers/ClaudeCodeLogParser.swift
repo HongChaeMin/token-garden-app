@@ -14,6 +14,17 @@ struct ClaudeCodeLogParser: TokenLogParser {
         return ["\(home)/.claude"]
     }
 
+    /// Returns sessionId if this line is a session Stop event
+    func parseSessionEnd(logLine: String) -> String? {
+        guard let data = logLine.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hookEvent = json["hookEvent"] as? String,
+              hookEvent == "Stop",
+              let sessionId = json["sessionId"] as? String
+        else { return nil }
+        return sessionId
+    }
+
     func parse(logLine: String) -> TokenEvent? {
         guard let data = logLine.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

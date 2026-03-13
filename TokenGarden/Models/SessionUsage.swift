@@ -8,6 +8,7 @@ class SessionUsage {
     var totalTokens: Int
     var startTime: Date
     var lastTime: Date
+    var isActive: Bool = true
 
     init(sessionId: String, projectName: String, startTime: Date) {
         self.sessionId = sessionId
@@ -15,5 +16,6 @@ class SessionUsage {
         self.totalTokens = 0
         self.startTime = startTime
         self.lastTime = startTime
+        self.isActive = true
     }
 }

@@ -74,6 +74,15 @@ class TokenDataStore: ObservableObject {
         }
     }
 
+    func endSession(sessionId: String) {
+        let descriptor = FetchDescriptor<SessionUsage>(
+            predicate: #Predicate { $0.sessionId == sessionId }
+        )
+        if let session = try? modelContext.fetch(descriptor).first {
+            session.isActive = false
+        }
+    }
+
     func flush() {
         if pendingSaveCount > 0 {
             try? modelContext.save()

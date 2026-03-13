@@ -126,7 +126,7 @@ struct PopoverView: View {
             } else if showSettings {
                 SettingsView()
             } else {
-                VStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 12) {
                     HeatmapView(dailyUsages: heatmapData, selectedDate: $selectedDate)
                         .padding(.horizontal, 12)
                         .padding(.top, 8)
