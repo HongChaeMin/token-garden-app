@@ -83,7 +83,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             logWatcher.backfill()
             dataStore.flush()
-            dataStore.refreshActiveStatus()
+
+            // refreshActiveStatus runs ps+lsof on background, updates DB on MainActor
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                self?.dataStore.refreshActiveStatus()
+            }
 
             // Update menu bar with real data after backfill
             let todayTokens = dataStore.fetchDailyUsages(
@@ -98,7 +102,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Periodic refresh of active sessions (every 30s)
         refreshTimer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
+            DispatchQueue.global(qos: .utility).async {
                 self?.dataStore.refreshActiveStatus()
             }
         }

@@ -85,11 +85,9 @@ class TokenDataStore: ObservableObject {
     }
 
     /// Refresh active status by checking running claude processes.
-    func refreshActiveStatus() {
-        Task {
-            let activeProjects = await Task.detached {
-                Self.getActiveClaudeProjects()
-            }.value
+    nonisolated func refreshActiveStatus() {
+        let activeProjects = Self.getActiveClaudeProjects()
+        Task { @MainActor in
             self.applyActiveStatus(activeProjects: activeProjects)
         }
     }
