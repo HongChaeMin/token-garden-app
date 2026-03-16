@@ -85,19 +85,22 @@ class TokenDataStore: ObservableObject {
     }
 
     /// Refresh active status by checking running claude processes.
-    /// Uses `lsof` to find active claude process working directories,
-    /// then matches against recent sessions by project name.
     func refreshActiveStatus() {
+        Task.detached {
+            let activeProjects = Self.getActiveClaudeProjects()
+            await MainActor.run {
+                self.applyActiveStatus(activeProjects: activeProjects)
+            }
+        }
+    }
+
+    private func applyActiveStatus(activeProjects: Set<String>) {
         let descriptor = FetchDescriptor<SessionUsage>()
         guard let sessions = try? modelContext.fetch(descriptor) else { return }
-
-        // Get active claude process cwds
-        let activeProjects = getActiveClaudeProjects()
 
         for session in sessions {
             session.isActive = false
 
-            // Check if project matches a running claude process
             if activeProjects.contains(session.projectName) {
                 let projectSessions = sessions
                     .filter { $0.projectName == session.projectName }
@@ -110,11 +113,8 @@ class TokenDataStore: ObservableObject {
         try? modelContext.save()
     }
 
-    /// Returns project names (last path component of cwd) for running claude processes.
-    /// Uses `ps` to find PIDs, then `lsof -p` per PID to get cwd
-    /// (some claude processes report version as COMMAND, so `-c claude` misses them).
-    private func getActiveClaudeProjects() -> Set<String> {
-        // Step 1: get PIDs via ps
+    /// Returns project names for running claude processes (runs on background thread).
+    private nonisolated static func getActiveClaudeProjects() -> Set<String> {
         let psPipe = Pipe()
         let psProc = Process()
         psProc.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -130,7 +130,6 @@ class TokenDataStore: ObservableObject {
         var pids: [String] = []
         for line in psOutput.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // Match lines ending with "claude" (binary name)
             if trimmed.hasSuffix("/claude") || trimmed.hasSuffix(" claude") {
                 let parts = trimmed.split(separator: " ", maxSplits: 1)
                 if let pid = parts.first { pids.append(String(pid)) }
@@ -138,7 +137,6 @@ class TokenDataStore: ObservableObject {
         }
         guard !pids.isEmpty else { return [] }
 
-        // Step 2: get cwd for each PID via lsof
         var projects = Set<String>()
         for pid in pids {
             let pipe = Pipe()
