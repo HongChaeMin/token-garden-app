@@ -111,33 +111,56 @@ class TokenDataStore: ObservableObject {
     }
 
     /// Returns project names (last path component of cwd) for running claude processes.
+    /// Uses `ps` to find PIDs, then `lsof -p` per PID to get cwd
+    /// (some claude processes report version as COMMAND, so `-c claude` misses them).
     private func getActiveClaudeProjects() -> Set<String> {
-        let pipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        process.arguments = ["-a", "-d", "cwd", "-c", "claude"]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        // Step 1: get PIDs via ps
+        let psPipe = Pipe()
+        let psProc = Process()
+        psProc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        psProc.arguments = ["-eo", "pid,comm"]
+        psProc.standardOutput = psPipe
+        psProc.standardError = FileHandle.nullDevice
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return []
+        do { try psProc.run(); psProc.waitUntilExit() } catch { return [] }
+
+        let psData = psPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let psOutput = String(data: psData, encoding: .utf8) else { return [] }
+
+        var pids: [String] = []
+        for line in psOutput.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Match lines ending with "claude" (binary name)
+            if trimmed.hasSuffix("/claude") || trimmed.hasSuffix(" claude") {
+                let parts = trimmed.split(separator: " ", maxSplits: 1)
+                if let pid = parts.first { pids.append(String(pid)) }
+            }
         }
+        guard !pids.isEmpty else { return [] }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8) else { return [] }
-
+        // Step 2: get cwd for each PID via lsof
         var projects = Set<String>()
-        for line in output.components(separatedBy: "\n") {
-            guard line.hasPrefix("claude") else { continue }
-            // lsof output: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
-            let parts = line.split(separator: " ", maxSplits: 8)
-            if parts.count >= 9 {
-                let path = String(parts[8])
-                let name = URL(fileURLWithPath: path).lastPathComponent
-                projects.insert(name)
+        for pid in pids {
+            let pipe = Pipe()
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+            proc.arguments = ["-a", "-d", "cwd", "-p", pid]
+            proc.standardOutput = pipe
+            proc.standardError = FileHandle.nullDevice
+
+            do { try proc.run(); proc.waitUntilExit() } catch { continue }
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else { continue }
+
+            for line in output.components(separatedBy: "\n") {
+                guard line.contains("cwd") else { continue }
+                let parts = line.split(separator: " ", maxSplits: 8)
+                if parts.count >= 9 {
+                    let path = String(parts[8])
+                    let name = URL(fileURLWithPath: path).lastPathComponent
+                    projects.insert(name)
+                }
             }
         }
         return projects
