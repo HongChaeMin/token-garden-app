@@ -67,7 +67,7 @@ private struct SessionRow: View {
     }()
 
     private var duration: String {
-        let interval = session.lastTime.timeIntervalSince(session.startTime)
+        let interval = Date().timeIntervalSince(session.startTime)
         let minutes = Int(interval) / 60
         if minutes < 1 { return "<1m" }
         if minutes < 60 { return "\(minutes)m" }

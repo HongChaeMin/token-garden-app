@@ -10,7 +10,7 @@ class TokenDataStore: ObservableObject {
 
     init(modelContainer: ModelContainer) {
         self.modelContainer = modelContainer
-        self.modelContext = ModelContext(modelContainer)
+        self.modelContext = modelContainer.mainContext
     }
 
     func record(_ event: TokenEvent) {
@@ -55,7 +55,6 @@ class TokenDataStore: ObservableObject {
             if let session = try? modelContext.fetch(sessionDescriptor).first {
                 session.totalTokens += event.totalTokens
                 session.lastTime = event.timestamp
-                session.isActive = true
             } else {
                 let session = SessionUsage(
                     sessionId: sessionId,
