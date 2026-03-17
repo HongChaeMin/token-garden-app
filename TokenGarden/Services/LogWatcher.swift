@@ -85,15 +85,50 @@ class LogWatcher {
         }
     }
 
-    func backfill() {
-        for watchPath in watchPaths {
-            let enumerator = FileManager.default.enumerator(atPath: watchPath)
-            while let relativePath = enumerator?.nextObject() as? String {
-                guard relativePath.hasSuffix(".jsonl"),
-                      !URL(fileURLWithPath: relativePath).lastPathComponent.contains("compact") else { continue }
-                let fullPath = (watchPath as NSString).appendingPathComponent(relativePath)
-                if fileOffsets[fullPath] == nil {
-                    processFile(at: fullPath)
+    /// Backfill on background thread. Reads files and parses lines off-main,
+    /// then delivers parsed TokenEvents to the callback in batches.
+    func backfill(parser: ClaudeCodeLogParser, onEvent: @escaping @MainActor (TokenEvent) -> Void, completion: @escaping @MainActor () -> Void = {}) {
+        let currentOffsets = fileOffsets
+        let paths = watchPaths
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var events: [TokenEvent] = []
+            var newOffsets: [String: Int] = [:]
+
+            for watchPath in paths {
+                guard let enumerator = FileManager.default.enumerator(atPath: watchPath) else { continue }
+                while let relativePath = enumerator.nextObject() as? String {
+                    guard relativePath.hasSuffix(".jsonl"),
+                          !URL(fileURLWithPath: relativePath).lastPathComponent.contains("compact") else { continue }
+                    let fullPath = (watchPath as NSString).appendingPathComponent(relativePath)
+                    guard currentOffsets[fullPath] == nil else { continue }
+
+                    guard let handle = FileHandle(forReadingAtPath: fullPath) else { continue }
+                    let data = handle.readDataToEndOfFile()
+                    newOffsets[fullPath] = Int(handle.offsetInFile)
+                    handle.closeFile()
+
+                    guard let content = String(data: data, encoding: .utf8) else { continue }
+                    for line in content.components(separatedBy: .newlines) where !line.isEmpty {
+                        if let event = parser.parse(logLine: line) {
+                            events.append(event)
+                        }
+                    }
+                }
+            }
+
+            // Deliver results to main in one batch
+            DispatchQueue.main.async {
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    for (path, offset) in newOffsets {
+                        self.fileOffsets[path] = offset
+                    }
+                    self.saveOffsets()
+                    for event in events {
+                        onEvent(event)
+                    }
+                    completion()
                 }
             }
         }

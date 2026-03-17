@@ -104,7 +104,9 @@ class TokenDataStore: ObservableObject {
     }
 
     /// Returns project names for running claude processes. Safe to call from any thread.
+    /// Single lsof call with all PIDs at once to minimize overhead.
     nonisolated static func getActiveClaudeProjects() -> Set<String> {
+        // Step 1: get PIDs via ps
         let psPipe = Pipe()
         let psProc = Process()
         psProc.executableURL = URL(fileURLWithPath: "/bin/ps")
@@ -112,9 +114,9 @@ class TokenDataStore: ObservableObject {
         psProc.standardOutput = psPipe
         psProc.standardError = FileHandle.nullDevice
 
-        do { try psProc.run(); psProc.waitUntilExit() } catch { return [] }
-
+        do { try psProc.run() } catch { return [] }
         let psData = psPipe.fileHandleForReading.readDataToEndOfFile()
+        psProc.waitUntilExit()
         guard let psOutput = String(data: psData, encoding: .utf8) else { return [] }
 
         var pids: [String] = []
@@ -127,28 +129,27 @@ class TokenDataStore: ObservableObject {
         }
         guard !pids.isEmpty else { return [] }
 
+        // Step 2: single lsof call with all PIDs
+        let pipe = Pipe()
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        proc.arguments = ["-a", "-d", "cwd", "-p", pids.joined(separator: ",")]
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+
+        do { try proc.run() } catch { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+
         var projects = Set<String>()
-        for pid in pids {
-            let pipe = Pipe()
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-            proc.arguments = ["-a", "-d", "cwd", "-p", pid]
-            proc.standardOutput = pipe
-            proc.standardError = FileHandle.nullDevice
-
-            do { try proc.run(); proc.waitUntilExit() } catch { continue }
-
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            guard let output = String(data: data, encoding: .utf8) else { continue }
-
-            for line in output.components(separatedBy: "\n") {
-                guard line.contains("cwd") else { continue }
-                let parts = line.split(separator: " ", maxSplits: 8)
-                if parts.count >= 9 {
-                    let path = String(parts[8])
-                    let name = URL(fileURLWithPath: path).lastPathComponent
-                    projects.insert(name)
-                }
+        for line in output.components(separatedBy: "\n") {
+            guard line.contains("cwd") else { continue }
+            let parts = line.split(separator: " ", maxSplits: 8)
+            if parts.count >= 9 {
+                let path = String(parts[8])
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                projects.insert(name)
             }
         }
         return projects
