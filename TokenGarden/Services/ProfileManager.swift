@@ -43,25 +43,7 @@ class ProfileManager: ObservableObject {
         modelContext.insert(profile)
         try? modelContext.save()
         activeProfile = profile
-        backfillFromDailyUsage(profileName: name)
         return true
-    }
-
-    /// Backfills ProfileTokenUsage from existing DailyUsage records (for new profiles)
-    private func backfillFromDailyUsage(profileName: String) {
-        let descriptor = FetchDescriptor<DailyUsage>()
-        guard let allDaily = try? modelContext.fetch(descriptor), !allDaily.isEmpty else { return }
-
-        for daily in allDaily {
-            let day = daily.date
-            let checkDescriptor = FetchDescriptor<ProfileTokenUsage>(
-                predicate: #Predicate { $0.profileName == profileName && $0.date == day }
-            )
-            guard (try? modelContext.fetch(checkDescriptor).first) == nil else { continue }
-            let usage = ProfileTokenUsage(profileName: profileName, date: day, tokens: daily.totalTokens)
-            modelContext.insert(usage)
-        }
-        try? modelContext.save()
     }
 
     @discardableResult

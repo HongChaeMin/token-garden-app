@@ -58,6 +58,9 @@ class Profile {
     }
 
     var profileColor: Color {
-        (ProfileColor(rawValue: colorName) ?? .blue).color
+        let colors = ProfileColor.allCases
+        let hash = name.unicodeScalars.reduce(0) { $0 &+ Int($1.value) &* 31 }
+        let index = abs(hash) % colors.count
+        return colors[index].color
     }
 }

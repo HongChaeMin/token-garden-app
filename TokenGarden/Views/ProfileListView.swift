@@ -179,7 +179,7 @@ private struct ProfileRow: View {
             // Header row
             HStack(spacing: 8) {
                 Circle()
-                    .fill(profile.isActive ? profile.profileColor : .gray.opacity(0.3))
+                    .fill(profile.isActive ? Color.green : .gray.opacity(0.3))
                     .frame(width: 8, height: 8)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(profile.name)
@@ -205,22 +205,6 @@ private struct ProfileRow: View {
                         .foregroundStyle(.red.opacity(0.6))
                 }
                 .buttonStyle(.plain)
-            }
-
-            // Color picker
-            HStack(spacing: 4) {
-                ForEach(ProfileColor.allCases, id: \.rawValue) { pc in
-                    Circle()
-                        .fill(pc.color)
-                        .frame(width: 12, height: 12)
-                        .overlay(
-                            profile.colorName == pc.rawValue
-                                ? Circle().stroke(Color.primary, lineWidth: 1.5)
-                                : nil
-                        )
-                        .onTapGesture { profile.colorName = pc.rawValue }
-                }
-                Spacer()
             }
 
             if let limits = usageLimits {
