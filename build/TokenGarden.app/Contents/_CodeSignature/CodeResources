@@ -8,6 +8,46 @@
 		<data>
 		+5Y2JjK+cXEHILdKKGfweNStZFs=
 		</data>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/Contents.json</key>
+		<data>
+		itVaxbiFOUTep5krzCcMGZtDVHw=
+		</data>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_1024.png</key>
+		<data>
+		pM20Uzt8VrCf7GZwJ33ebQQ86yw=
+		</data>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_128.png</key>
+		<data>
+		1SmDGf2xaT1mAhjwHxJUlM28UhE=
+		</data>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_16.png</key>
+		<data>
+		oPy6cMD+74D6zY4Vn/iPbmilNhg=
+		</data>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_256.png</key>
+		<data>
+		vg9b4CBVdo63xf4rm/HQ/HFcDB8=
+		</data>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_32.png</key>
+		<data>
+		qXCBKFHGpEMab4OspesQD2c29OA=
+		</data>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_512.png</key>
+		<data>
+		12FkCXyXG4LutjsDC4Xs9/t1DsU=
+		</data>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_64.png</key>
+		<data>
+		S2l8q3/u8n/tEijZ/taIjOgN32k=
+		</data>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/Contents.json</key>
+		<data>
+		OsxTSdeF0zGUdTl13dMC26vX4YM=
+		</data>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Contents/Info.plist</key>
+		<data>
+		HaRLOVSD/+U+miAxB6lhVJssqWg=
+		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
@@ -16,6 +56,76 @@
 			<key>hash2</key>
 			<data>
 			56m+riZub0NKLFpgsHYkKWsML5thZHqXjKeXvj32/g8=
+			</data>
+		</dict>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/Contents.json</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			EfSLUnyEZJLZA1iZMUVNEKc2izB3AFw2HikST4Sa7OQ=
+			</data>
+		</dict>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_1024.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			H+Ps5GYJCmIq5W+GknHRpTMzlQ7V/02YbMlLbmGlbAw=
+			</data>
+		</dict>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_128.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			5HlZt4ykYZM+qMa65ulrHOOk9CzFyR5YBNbWmgO+/Vs=
+			</data>
+		</dict>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_16.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			6QCrdGEZJR/Z+u3VrnAE1APzSLqw5y6l8q079xzBwcA=
+			</data>
+		</dict>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_256.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			T2IRu39PXp+w4FnVd0qU6Ic33UT5FsvfqlYkcPJWVF4=
+			</data>
+		</dict>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_32.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			AXjnWTnyj2xF8CQfX59PZyEXxz7sNiA+Dq2+TH0YPX8=
+			</data>
+		</dict>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_512.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			kOSUNvIlvWYwfGXCrrnsZWDcLH6fGX4vhAh7K6yr0aQ=
+			</data>
+		</dict>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/AppIcon.appiconset/icon_64.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			r7OXtFdxnio5xLoXOxB8OZQ3IoGXsaCfO0PWQP6nLoQ=
+			</data>
+		</dict>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Assets.xcassets/Contents.json</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			D9Sbo8NYXHCWeOAEaoIcPGBoXscGNyDTDTo0SL46IIs=
+			</data>
+		</dict>
+		<key>Resources/TokenGarden_TokenGarden.bundle/Contents/Info.plist</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			ciYLTBzkpkLJeJNRussY5UohpHf1z4evX0DBzNPR/i0=
 			</data>
 		</dict>
 	</dict>
