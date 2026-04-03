@@ -149,16 +149,15 @@ struct PopoverView: View {
                     .frame(minHeight: 200)
             } else if showSettings {
                 SettingsView()
+                    .transition(.identity)
             } else if showProfiles {
                 ProfileListView()
+                    .transition(.identity)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    ProfileBannerView(onTap: { showProfiles = true })
-                        .padding(.horizontal, 12)
-                        .padding(.top, 8)
-
                     HeatmapView(dailyUsages: heatmapData, selectedDate: $selectedDate)
                         .padding(.horizontal, 12)
+                        .padding(.top, 8)
 
                     if let date = selectedDate,
                        let usage = allUsages.first(where: {
@@ -202,10 +201,15 @@ struct PopoverView: View {
 
                     SessionListView()
                         .padding(.horizontal, 12)
+
+                    ProfileBannerView(onTap: { showProfiles = true })
+                        .padding(.horizontal, 12)
                 }
                 .padding(.bottom, 12)
             }
         }
         .frame(width: 320)
+        .animation(nil, value: showSettings)
+        .animation(nil, value: showProfiles)
     }
 }

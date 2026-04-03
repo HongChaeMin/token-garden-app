@@ -113,18 +113,20 @@ struct ProfileListView: View {
 
             // Settings toggles
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("Auto Balancing", isOn: $autoBalancingEnabled)
-                .controlSize(.small)
+                HStack {
+                    Toggle("Auto Balancing", isOn: $autoBalancingEnabled)
+                    .controlSize(.small)
+                    #if DEBUG
+                    Spacer()
+                    Button("Force") {
+                        profileManager.balanceIfNeeded()
+                    }
+                    .controlSize(.mini)
+                    #endif
+                }
 
                 Toggle("Model Auto Balancing", isOn: $modelAutoBalancingEnabled)
                 .controlSize(.small)
-
-                #if DEBUG
-                Button("Force Balance") {
-                    profileManager.balanceIfNeeded()
-                }
-                .controlSize(.small)
-                #endif
 
                 Toggle("Token Keeper", isOn: Binding(
                     get: { profileManager.tokenKeeperEnabled },
