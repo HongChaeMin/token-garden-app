@@ -31,9 +31,10 @@ struct HourlyChartView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                Image(systemName: "chevron.right")
                     .font(.system(size: 8))
                     .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
             }
             .contentShape(Rectangle())
             .onTapGesture { isExpanded.toggle() }

@@ -4,6 +4,8 @@ import SwiftData
 struct PopoverView: View {
     @EnvironmentObject var menuBarController: MenuBarController
     @Query(sort: \DailyUsage.date) private var allUsages: [DailyUsage]
+    enum Tab { case overview, accounts }
+    @State private var activeTab: Tab = .overview
     @State private var showSettings = false
     @State private var showProfiles = false
     @State private var selectedDate: Date?
@@ -126,16 +128,31 @@ struct PopoverView: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    Text(showProfiles ? "Profiles" : "Settings")
+                        .font(.headline)
+                } else {
+                    Text("Token Garden")
+                        .font(.headline)
                 }
-                Text(showProfiles ? "Profiles" : (showSettings ? "Settings" : "Token Garden"))
-                    .font(.headline)
                 Spacer()
                 if !showSettings && !showProfiles {
-                    Button(action: { showSettings = true }) {
-                        Image(systemName: "gearshape")
-                            .foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        Button(action: { activeTab = .overview }) {
+                            Image(systemName: "chart.bar")
+                                .foregroundStyle(activeTab == .overview ? .primary : .tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        Button(action: { activeTab = .accounts }) {
+                            Image(systemName: "person.2")
+                                .foregroundStyle(activeTab == .accounts ? .primary : .tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        Button(action: { showSettings = true }) {
+                            Image(systemName: "gearshape")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 12)
@@ -143,6 +160,12 @@ struct PopoverView: View {
             .padding(.bottom, 8)
 
             Divider()
+
+            if !showSettings && !showProfiles && activeTab == .accounts {
+                ProfileBannerView(onTap: { showProfiles = true })
+                    .padding(.horizontal, 12)
+                    .padding(.top, 8)
+            }
 
             if let reason = emptyStateReason {
                 EmptyStateView(reason: reason)
@@ -152,6 +175,8 @@ struct PopoverView: View {
                     .transition(.identity)
             } else if showProfiles {
                 ProfileListView()
+            } else if activeTab == .accounts {
+                AccountsTabView()
                     .transition(.identity)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
@@ -201,9 +226,6 @@ struct PopoverView: View {
 
                     SessionListView()
                         .padding(.horizontal, 12)
-
-                    ProfileBannerView(onTap: { showProfiles = true })
-                        .padding(.horizontal, 12)
                 }
                 .padding(.bottom, 12)
             }
@@ -211,5 +233,6 @@ struct PopoverView: View {
         .frame(width: 320)
         .animation(nil, value: showSettings)
         .animation(nil, value: showProfiles)
+        .animation(nil, value: activeTab)
     }
 }

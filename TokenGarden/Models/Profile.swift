@@ -16,6 +16,25 @@ enum PlanLimit {
     }
 }
 
+enum ProfileColor: String, CaseIterable {
+    case blue, green, orange, purple, pink, mint, red, yellow
+
+    var color: Color {
+        switch self {
+        case .blue: return .blue
+        case .green: return .green
+        case .orange: return .orange
+        case .purple: return .purple
+        case .pink: return .pink
+        case .mint: return .mint
+        case .red: return .red
+        case .yellow: return .yellow
+        }
+    }
+}
+
+import SwiftUI
+
 @Model
 class Profile {
     @Attribute(.unique) var name: String
@@ -25,6 +44,7 @@ class Profile {
     var isActive: Bool
     var createdAt: Date
     var monthlyLimit: Int
+    var colorName: String
 
     init(name: String, email: String, plan: String, credentialsJSON: Data) {
         self.name = name
@@ -34,5 +54,10 @@ class Profile {
         self.isActive = false
         self.createdAt = Date()
         self.monthlyLimit = PlanLimit.defaultLimit(for: plan)
+        self.colorName = ProfileColor.blue.rawValue
+    }
+
+    var profileColor: Color {
+        (ProfileColor(rawValue: colorName) ?? .blue).color
     }
 }

@@ -117,17 +117,13 @@ class ProfileManager: ObservableObject {
             return
         }
 
+        // Only consider profiles with cached API usage data
         var leastUsed: Profile?
         var leastScore = Double.greatestFiniteMagnitude
 
         for profile in profiles {
-            let score: Double
-            if let limits = usageLimitsCache[profile.name] {
-                score = max(limits.fiveHourUtilization, limits.sevenDayUtilization)
-            } else {
-                score = Double(todayTokens(for: profile.name))
-            }
-
+            guard let limits = usageLimitsCache[profile.name] else { continue }
+            let score = max(limits.fiveHourUtilization, limits.sevenDayUtilization)
             if score < leastScore {
                 leastScore = score
                 leastUsed = profile
@@ -173,6 +169,14 @@ class ProfileManager: ObservableObject {
             predicate: #Predicate { $0.profileName == profileName && $0.date == today }
         )
         return (try? modelContext.fetch(descriptor).first)?.tokens ?? 0
+    }
+
+    func prefetchAllUsageLimits() {
+        let descriptor = FetchDescriptor<Profile>()
+        guard let profiles = try? modelContext.fetch(descriptor) else { return }
+        for profile in profiles {
+            refreshUsageLimits(for: profile)
+        }
     }
 
     func refreshUsageLimits(for profile: Profile) {

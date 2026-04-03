@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import SwiftData
+import SQLite3
 
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -40,12 +41,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             modelContainer = try ModelContainer(for: schema, configurations: [config])
         } catch {
+            // Backup profiles before reset
+            let backupProfiles = Self.backupProfiles(from: storeURL)
+
             // New model added — reset store and backfill offsets to rebuild from logs
             let storeDir = storeURL.deletingLastPathComponent()
             try? FileManager.default.removeItem(at: storeDir)
             try? FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
             UserDefaults.standard.removeObject(forKey: "LogWatcherOffsets")
             modelContainer = try! ModelContainer(for: schema, configurations: [config])
+
+            // Restore profiles after reset
+            Self.restoreProfiles(backupProfiles, into: modelContainer.mainContext)
         }
         dataStore = TokenDataStore(modelContainer: modelContainer)
 
@@ -54,6 +61,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let activeProfile = profileManager.activeProfile {
             dataStore.activeProfileName = activeProfile.name
         }
+        profileManager.prefetchAllUsageLimits()
 
         // Status Item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -176,6 +184,66 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Popover
+
+    // MARK: - Profile Backup/Restore (survives DB reset)
+
+    private struct ProfileBackup: Codable {
+        let name: String
+        let email: String
+        let plan: String
+        let credentialsJSON: Data
+        let isActive: Bool
+        let monthlyLimit: Int
+        let colorName: String
+    }
+
+    private static func backupProfiles(from storeURL: URL) -> [ProfileBackup] {
+        // Read profiles directly via SQLite before DB is destroyed
+        var db: OpaquePointer?
+        guard sqlite3_open(storeURL.path, &db) == SQLITE_OK else { return [] }
+        defer { sqlite3_close(db) }
+
+        var stmt: OpaquePointer?
+        let sql = "SELECT ZNAME, ZEMAIL, ZPLAN, ZCREDENTIALSJSON, ZISACTIVE, ZMONTHLYLIMIT, ZCOLORNAME FROM ZPROFILE"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+
+        var backups: [ProfileBackup] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let name = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+            let email = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+            let plan = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+            let credLen = sqlite3_column_bytes(stmt, 3)
+            let credData: Data
+            if credLen > 0, let ptr = sqlite3_column_blob(stmt, 3) {
+                credData = Data(bytes: ptr, count: Int(credLen))
+            } else {
+                credData = Data()
+            }
+            let isActive = sqlite3_column_int(stmt, 4) != 0
+            let monthlyLimit = Int(sqlite3_column_int(stmt, 5))
+            let colorName = sqlite3_column_text(stmt, 6).map { String(cString: $0) } ?? "blue"
+
+            guard !name.isEmpty else { continue }
+            backups.append(ProfileBackup(
+                name: name, email: email, plan: plan,
+                credentialsJSON: credData, isActive: isActive,
+                monthlyLimit: monthlyLimit, colorName: colorName
+            ))
+        }
+        return backups
+    }
+
+    private static func restoreProfiles(_ backups: [ProfileBackup], into context: ModelContext) {
+        for b in backups {
+            let profile = Profile(name: b.name, email: b.email, plan: b.plan, credentialsJSON: b.credentialsJSON)
+            profile.isActive = b.isActive
+            profile.monthlyLimit = b.monthlyLimit
+            profile.colorName = b.colorName
+            context.insert(profile)
+        }
+        try? context.save()
+    }
 
     @objc func togglePopover() {
         guard let event = NSApp.currentEvent else { return }

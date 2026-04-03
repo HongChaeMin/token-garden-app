@@ -28,7 +28,7 @@ struct ProfileBannerView: View {
                 if let profile = profileManager.activeProfile {
                     HStack(spacing: 8) {
                         Circle()
-                            .fill(.green)
+                            .fill(profile.profileColor)
                             .frame(width: 8, height: 8)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(profile.name)

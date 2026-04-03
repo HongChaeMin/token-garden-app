@@ -47,13 +47,17 @@ class TokenDataStore: ObservableObject {
         }
 
         if let projectName = event.projectName {
-            if let existing = daily.projectBreakdowns.first(where: { $0.projectName == projectName }) {
+            let profile = activeProfileName
+            if let existing = daily.projectBreakdowns.first(where: {
+                $0.projectName == projectName && $0.profileName == profile
+            }) {
                 existing.tokens += event.totalTokens
             } else {
                 let projectUsage = ProjectUsage(
                     projectName: projectName,
                     tokens: event.totalTokens,
-                    model: event.model
+                    model: event.model,
+                    profileName: profile
                 )
                 projectUsage.dailyUsage = daily
                 daily.projectBreakdowns.append(projectUsage)
