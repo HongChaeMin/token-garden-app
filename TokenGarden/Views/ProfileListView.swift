@@ -32,7 +32,7 @@ struct ProfileListView: View {
                         )
                     }
                 }
-                .task {
+                .task(id: profileManager.activeProfile?.name) {
                     for profile in profiles {
                         profileManager.refreshUsageLimits(for: profile)
                     }

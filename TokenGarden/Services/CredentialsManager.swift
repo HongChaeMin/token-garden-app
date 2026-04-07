@@ -142,14 +142,69 @@ struct CredentialsManager {
         currentKeychainData().flatMap { oauthToken(from: $0) }
     }
 
+    /// Refreshes OAuth token via `claude --print-access-token` (same as Token Keeper).
+    /// Returns the fresh token on success.
+    nonisolated static func refreshOAuthToken() -> String? {
+        guard let claude = claudePath() else {
+            print("[UsageLimits] claude CLI not found, cannot refresh token")
+            return nil
+        }
+
+        let pipe = Pipe()
+        let errPipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: claude)
+        process.arguments = ["--print-access-token"]
+        process.standardOutput = pipe
+        process.standardError = errPipe
+        process.environment = ProcessInfo.processInfo.environment
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            print("[UsageLimits] refresh process failed: \(error)")
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else {
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let errStr = String(data: errData, encoding: .utf8) ?? ""
+            print("[UsageLimits] refresh exited with \(process.terminationStatus), stderr: \(errStr.prefix(500))")
+            return nil
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let token = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !token.isEmpty
+        else {
+            print("[UsageLimits] refresh returned empty token")
+            return nil
+        }
+
+        print("[UsageLimits] token refreshed via CLI")
+        return token
+    }
+
     /// Fetches real-time rate limit utilization via a minimal API call.
     /// Parses `anthropic-ratelimit-unified-*` response headers.
+    /// Automatically refreshes expired OAuth tokens and retries once.
     nonisolated static func fetchUsageLimits(oauthToken: String) -> UsageLimits? {
+        _fetchUsageLimits(token: oauthToken)
+    }
+
+    /// Single-attempt fetch (no auto-refresh). Used by ProfileManager for manual swap-refresh flow.
+    nonisolated static func _fetchUsageLimitsOnce(token: String) -> UsageLimits? {
+        _fetchUsageLimits(token: token)
+    }
+
+    private nonisolated static func _fetchUsageLimits(token: String) -> UsageLimits? {
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else { return nil }
 
         var request = URLRequest(url: url, timeoutInterval: 10)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(oauthToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.setValue("claude-code-20250219,oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -161,11 +216,13 @@ struct CredentialsManager {
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         let semaphore = DispatchSemaphore(value: 0)
-        var result: UsageLimits?
+        nonisolated(unsafe) var result: UsageLimits?
 
         URLSession.shared.dataTask(with: request) { _, response, _ in
             defer { semaphore.signal() }
-            guard let http = response as? HTTPURLResponse else { return }
+            guard let http = response as? HTTPURLResponse,
+                  http.statusCode != 401 else { return }
+
             let h = http.allHeaderFields as? [String: String] ?? [:]
 
             func doubleHeader(_ key: String) -> Double? {

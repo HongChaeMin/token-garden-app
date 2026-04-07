@@ -38,9 +38,21 @@ class ProfileManager: ObservableObject {
             existing.forEach { $0.isActive = false }
         }
 
-        let profile = Profile(name: name, email: authInfo.email, plan: authInfo.plan, credentialsJSON: credentials)
-        profile.isActive = true
-        modelContext.insert(profile)
+        // Update existing profile if name matches, otherwise create new
+        let existingDesc = FetchDescriptor<Profile>(predicate: #Predicate { $0.name == name })
+        let profile: Profile
+        if let existing = try? modelContext.fetch(existingDesc).first {
+            existing.credentialsJSON = credentials
+            existing.email = authInfo.email
+            existing.plan = authInfo.plan
+            existing.isActive = true
+            profile = existing
+        } else {
+            profile = Profile(name: name, email: authInfo.email, plan: authInfo.plan, credentialsJSON: credentials)
+            profile.isActive = true
+            modelContext.insert(profile)
+        }
+
         try? modelContext.save()
         activeProfile = profile
         return true
@@ -68,6 +80,13 @@ class ProfileManager: ObservableObject {
         )
         guard let target = try? modelContext.fetch(descriptor).first else { return false }
 
+        // Save current keychain credentials to the outgoing profile
+        // (Claude Code may have refreshed the token since we last saved)
+        if let current = activeProfile,
+           let freshCreds = credentialsManager.readCredentials() {
+            current.credentialsJSON = freshCreds
+        }
+
         // Deactivate all currently active profiles
         let activeDescriptor = FetchDescriptor<Profile>(
             predicate: #Predicate { $0.isActive == true }
@@ -83,8 +102,10 @@ class ProfileManager: ObservableObject {
         activeProfile = target
         try? modelContext.save()
 
-        // Write credentials to disk
+        // Write target's credentials to keychain
         _ = credentialsManager.writeCredentials(target.credentialsJSON)
+
+        usageLimitsCache.removeValue(forKey: target.name)
         return true
     }
 
@@ -167,17 +188,43 @@ class ProfileManager: ObservableObject {
 
         let creds = profile.credentialsJSON
         let profileName = profile.name
+        let isActive = profile.name == activeProfile?.name
+
+        let credsMgr = credentialsManager
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let token = CredentialsManager.oauthToken(from: creds)
-                ?? CredentialsManager.currentOAuthToken()
+            let token: String?
+            if isActive {
+                // Active: prefer current keychain token (Claude Code keeps it fresh)
+                token = CredentialsManager.currentOAuthToken()
+                    ?? CredentialsManager.oauthToken(from: creds)
+            } else {
+                token = CredentialsManager.oauthToken(from: creds)
+            }
+
             guard let token else { return }
             let limits = CredentialsManager.fetchUsageLimits(oauthToken: token)
+
+            // If active profile succeeded, update stored credentials from keychain
+            if isActive, limits != nil, let freshCreds = credsMgr.readCredentials() {
+                DispatchQueue.main.async {
+                    self?.updateStoredCredentials(name: profileName, credentials: freshCreds)
+                }
+            }
+
             DispatchQueue.main.async {
                 if let limits {
                     self?.usageLimitsCache[profileName] = limits
                 }
             }
         }
+    }
+
+
+    private func updateStoredCredentials(name: String, credentials: Data) {
+        let descriptor = FetchDescriptor<Profile>(predicate: #Predicate { $0.name == name })
+        guard let profile = try? modelContext.fetch(descriptor).first else { return }
+        profile.credentialsJSON = credentials
+        try? modelContext.save()
     }
 
     func monthlyTokens(for profileName: String) -> Int {
@@ -221,7 +268,9 @@ class ProfileManager: ObservableObject {
         let credsMgr = credentialsManager
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            for (_, credentials) in credentialPairs {
+            var refreshed: [(name: String, credentials: Data)] = []
+
+            for (name, credentials) in credentialPairs {
                 guard credsMgr.writeCredentials(credentials) else { continue }
 
                 let process = Process()
@@ -236,22 +285,27 @@ class ProfileManager: ObservableObject {
                 } catch {
                     continue
                 }
+
+                // Read refreshed credentials immediately after this profile's refresh
+                if let updated = credsMgr.readCredentials() {
+                    refreshed.append((name: name, credentials: updated))
+                }
             }
 
-            // Read back refreshed credentials and restore active
+            // Restore active profile's credentials
+            if let activeCreds = activeCredentials {
+                _ = credsMgr.writeCredentials(activeCreds)
+            }
+
+            // Save each profile's refreshed credentials individually
             DispatchQueue.main.async {
                 guard let self else { return }
                 MainActor.assumeIsolated {
-                    let descriptor = FetchDescriptor<Profile>()
-                    guard let profiles = try? self.modelContext.fetch(descriptor) else { return }
-                    for profile in profiles {
-                        if let refreshed = self.credentialsManager.readCredentials() {
-                            profile.credentialsJSON = refreshed
+                    for (name, credentials) in refreshed {
+                        let desc = FetchDescriptor<Profile>(predicate: #Predicate { $0.name == name })
+                        if let profile = try? self.modelContext.fetch(desc).first {
+                            profile.credentialsJSON = credentials
                         }
-                    }
-                    // Restore active profile's credentials
-                    if let activeCreds = activeCredentials {
-                        _ = self.credentialsManager.writeCredentials(activeCreds)
                     }
                     try? self.modelContext.save()
                 }

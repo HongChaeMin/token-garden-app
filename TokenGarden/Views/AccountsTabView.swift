@@ -2,6 +2,8 @@ import SwiftUI
 import SwiftData
 
 struct AccountsTabView: View {
+    @EnvironmentObject var profileManager: ProfileManager
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ModelBreakdownView()
@@ -10,6 +12,71 @@ struct AccountsTabView: View {
                 .padding(.horizontal, 12)
         }
         .padding(.vertical, 12)
+    }
+}
+
+// MARK: - Active Profile Rate Limits
+
+private struct ActiveProfileLimitsView: View {
+    let limits: UsageLimits?
+
+    private func resetLabel(for date: Date) -> String {
+        let diff = date.timeIntervalSinceNow
+        if diff <= 0 { return "Reset" }
+        let hours = Int(diff / 3600)
+        let minutes = Int((diff.truncatingRemainder(dividingBy: 3600)) / 60)
+        if hours > 0 { return "Resets in \(hours)h \(minutes)m" }
+        return "Resets in \(minutes)m"
+    }
+
+    private func barColor(_ utilization: Double) -> Color {
+        if utilization >= 0.9 { return .red }
+        if utilization >= 0.7 { return .orange }
+        return .blue
+    }
+
+    var body: some View {
+        if let limits {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Rate Limits")
+                    .font(.caption)
+                    .fontWeight(.medium)
+
+                limitRow(label: "5h session", utilization: limits.fiveHourUtilization, resetAt: limits.fiveHourResetAt)
+                limitRow(label: "7d rolling", utilization: limits.sevenDayUtilization, resetAt: limits.sevenDayResetAt)
+            }
+            .padding(8)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private func limitRow(label: String, utilization: Double, resetAt: Date) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(resetLabel(for: resetAt))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text(String(format: "%.0f%%", utilization * 100))
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .foregroundStyle(utilization >= 0.9 ? Color.red : .primary)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.secondary.opacity(0.15))
+                        .frame(height: 4)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(barColor(utilization))
+                        .frame(width: geo.size.width * min(utilization, 1.0), height: 4)
+                }
+            }
+            .frame(height: 4)
+        }
     }
 }
 
@@ -198,7 +265,6 @@ private struct ProjectProfileChartView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 8)
             } else {
-                // Legend
                 HStack(spacing: 8) {
                     ForEach(allProfileNames, id: \.self) { name in
                         HStack(spacing: 3) {
@@ -213,7 +279,6 @@ private struct ProjectProfileChartView: View {
                     Spacer()
                 }
 
-                // Bars
                 VStack(spacing: 4) {
                     ForEach(projectData.prefix(10), id: \.project) { item in
                         projectBar(item)
