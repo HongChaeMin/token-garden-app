@@ -3,15 +3,19 @@ import SwiftData
 
 struct AccountsTabView: View {
     @EnvironmentObject var profileManager: ProfileManager
+    var onProfilesTap: () -> Void = {}
+    var onCodexProfilesTap: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            ModelBreakdownView()
+            ProfileBannerView(onTap: onProfilesTap, onCodexTap: onCodexProfilesTap)
                 .padding(.horizontal, 12)
+                .padding(.top, 8)
             ProjectProfileChartView()
                 .padding(.horizontal, 12)
         }
         .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -87,6 +91,7 @@ private func normalizeModel(_ raw: String) -> String? {
     if lower.contains("opus") { return "Opus" }
     if lower.contains("sonnet") { return "Sonnet" }
     if lower.contains("haiku") { return "Haiku" }
+    if lower.hasPrefix("gpt-") || lower.hasPrefix("o") { return raw }
     return nil
 }
 
@@ -95,15 +100,38 @@ private func modelColor(_ model: String) -> Color {
     case "Opus": return .purple
     case "Sonnet": return .orange
     case "Haiku": return .mint
-    default: return .gray
+    default:
+        let codexColors: [Color] = [.green, .blue, .purple, .orange, .pink, .indigo, .brown]
+        let hash = model.unicodeScalars.reduce(0) { $0 &+ Int($1.value) &* 31 }
+        return codexColors[abs(hash) % codexColors.count]
     }
 }
 
 private func profileColor(for name: String) -> Color {
+    if name.hasPrefix("Codex/") {
+        let codexColors: [Color] = [.green, .indigo, .brown, .cyan, .pink]
+        let hash = name.unicodeScalars.reduce(0) { $0 &+ Int($1.value) &* 31 }
+        return codexColors[abs(hash) % codexColors.count]
+    }
     let colors = ProfileColor.allCases
     let hash = name.unicodeScalars.reduce(0) { $0 &+ Int($1.value) &* 31 }
     let index = abs(hash) % colors.count
     return colors[index].color
+}
+
+private func isCodexProfileName(_ name: String) -> Bool {
+    name.hasPrefix("Codex/")
+}
+
+private func sourceTokenLabel(title: String, color: Color, tokens: Int) -> some View {
+    HStack(spacing: 3) {
+        Circle()
+            .fill(color)
+            .frame(width: 5, height: 5)
+        Text("\(title) \(TokenFormatter.format(tokens))")
+            .font(.system(size: 9))
+            .foregroundStyle(tokens > 0 ? .secondary : .quaternary)
+    }
 }
 
 // MARK: - Model Breakdown (overall)
@@ -126,12 +154,30 @@ private struct ModelBreakdownView: View {
         modelTokens.reduce(0) { $0 + $1.tokens }
     }
 
+    private var claudeTokens: Int {
+        allProjectUsages
+            .filter { !isCodexProfileName($0.profileName ?? "") }
+            .reduce(0) { $0 + $1.tokens }
+    }
+
+    private var codexTokens: Int {
+        allProjectUsages
+            .filter { isCodexProfileName($0.profileName ?? "") }
+            .reduce(0) { $0 + $1.tokens }
+    }
+
     var body: some View {
         if !modelTokens.isEmpty && totalTokens > 0 {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Model Usage")
-                    .font(.caption)
-                    .fontWeight(.medium)
+                HStack {
+                    Text("Model Usage")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                    Spacer()
+                    Text("All \(TokenFormatter.format(totalTokens))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
 
                 GeometryReader { geo in
                     HStack(spacing: 1) {
@@ -145,6 +191,12 @@ private struct ModelBreakdownView: View {
                 }
                 .frame(height: 6)
                 .clipShape(RoundedRectangle(cornerRadius: 3))
+
+                HStack(spacing: 8) {
+                    sourceTokenLabel(title: "Claude", color: .purple, tokens: claudeTokens)
+                    sourceTokenLabel(title: "Codex", color: .green, tokens: codexTokens)
+                    Spacer()
+                }
 
                 HStack(spacing: 10) {
                     ForEach(modelTokens, id: \.model) { item in
@@ -171,7 +223,9 @@ private struct ModelBreakdownView: View {
 
 private struct ProjectProfileChartView: View {
     @Query private var allProjectUsages: [ProjectUsage]
-    @State private var hoveredProject: String?
+    @Query private var codexProfiles: [CodexProfile]
+    @State private var hoveredClaudeProject: String?
+    @State private var hoveredCodexProject: String?
     @State private var selectedRange: TimeRange = .today
 
     enum TimeRange: String, CaseIterable {
@@ -204,18 +258,35 @@ private struct ProjectProfileChartView: View {
         }
     }
 
-    private var projectData: [(project: String, profiles: [(name: String, tokens: Int)], total: Int)] {
+    private struct SourceProjectData {
+        let project: String
+        let profiles: [(name: String, tokens: Int)]
+        let total: Int
+    }
+
+    private var claudeProjectData: [SourceProjectData] {
+        projectData(forCodex: false)
+    }
+
+    private var codexProjectData: [SourceProjectData] {
+        projectData(forCodex: true)
+    }
+
+    private func projectData(forCodex: Bool) -> [SourceProjectData] {
         var byProject: [String: [String: Int]] = [:]
         for usage in filteredUsages {
-            let project = usage.projectName
             let profile = usage.profileName ?? "Unknown"
-            byProject[project, default: [:]][profile, default: 0] += usage.tokens
+            guard isCodexProfileName(profile) == forCodex else { continue }
+            byProject[usage.projectName, default: [:]][profile, default: 0] += usage.tokens
         }
         return byProject.map { project, profiles in
             let sorted = profiles.map { (name: $0.key, tokens: $0.value) }
                 .sorted { $0.tokens > $1.tokens }
-            let total = sorted.reduce(0) { $0 + $1.tokens }
-            return (project: project, profiles: sorted, total: total)
+            return SourceProjectData(
+                project: project,
+                profiles: sorted,
+                total: sorted.reduce(0) { $0 + $1.tokens }
+            )
         }
         .filter { $0.total > 0 }
         .sorted { $0.total > $1.total }
@@ -223,14 +294,29 @@ private struct ProjectProfileChartView: View {
 
     private var allProfileNames: [String] {
         var names = Set<String>()
-        for item in projectData {
+        for item in claudeProjectData + codexProjectData {
             for p in item.profiles { names.insert(p.name) }
         }
         return names.sorted()
     }
 
-    private var maxTotal: Int {
-        projectData.map(\.total).max() ?? 1
+    private var claudeProfileNames: [String] {
+        allProfileNames.filter { !isCodexProfileName($0) }
+    }
+
+    private var codexProfileNames: [String] {
+        allProfileNames.filter { isCodexProfileName($0) }
+    }
+
+    private func displayName(for profileName: String) -> String {
+        if profileName.hasPrefix("Codex/") {
+            let email = String(profileName.dropFirst("Codex/".count))
+            if let saved = codexProfiles.first(where: { $0.email == email }) {
+                return saved.name
+            }
+            return email.components(separatedBy: "@").first ?? email
+        }
+        return profileName
     }
 
     var body: some View {
@@ -258,41 +344,90 @@ private struct ProjectProfileChartView: View {
                 }
             }
 
-            if projectData.isEmpty {
+            if claudeProjectData.isEmpty && codexProjectData.isEmpty {
                 Text("No data")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 8)
             } else {
-                HStack(spacing: 8) {
-                    ForEach(allProfileNames, id: \.self) { name in
-                        HStack(spacing: 3) {
-                            Circle()
-                                .fill(profileColor(for: name))
-                                .frame(width: 5, height: 5)
-                            Text(name)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
+                VStack(spacing: 10) {
+                    sourceSection(
+                        title: "Claude Accounts",
+                        color: .purple,
+                        projectData: claudeProjectData,
+                        profileNames: claudeProfileNames,
+                        hoveredProject: $hoveredClaudeProject
+                    )
+                    if !claudeProjectData.isEmpty && !codexProjectData.isEmpty {
+                        Divider()
+                            .padding(.vertical, 2)
                     }
-                    Spacer()
-                }
-
-                VStack(spacing: 4) {
-                    ForEach(projectData.prefix(10), id: \.project) { item in
-                        projectBar(item)
-                    }
+                    sourceSection(
+                        title: "Codex Accounts",
+                        color: .green,
+                        projectData: codexProjectData,
+                        profileNames: codexProfileNames,
+                        hoveredProject: $hoveredCodexProject
+                    )
                 }
             }
         }
         .padding(8)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func projectBar(_ item: (project: String, profiles: [(name: String, tokens: Int)], total: Int)) -> some View {
-        let isHovered = hoveredProject == item.project
-        return VStack(alignment: .leading, spacing: 2) {
+    @ViewBuilder
+    private func sourceSection(
+        title: String,
+        color: Color,
+        projectData: [SourceProjectData],
+        profileNames: [String],
+        hoveredProject: Binding<String?>
+    ) -> some View {
+        let total = projectData.reduce(0) { $0 + $1.total }
+        if !projectData.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(title)
+                        .font(.caption2)
+                        .fontWeight(.medium)
+                    Spacer()
+                    sourceTokenLabel(
+                        title: title.replacingOccurrences(of: " Accounts", with: ""),
+                        color: color,
+                        tokens: total
+                    )
+                }
+
+                if !profileNames.isEmpty {
+                    profileLegendRow(names: profileNames)
+                }
+
+                VStack(spacing: 4) {
+                    ForEach(projectData.prefix(10), id: \.project) { item in
+                        projectBar(
+                            item,
+                            maxTotal: projectData.map(\.total).max() ?? 1,
+                            hoveredProject: hoveredProject
+                        )
+                    }
+                }
+            }
+            .padding(8)
+            .background(Color.secondary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func projectBar(
+        _ item: SourceProjectData,
+        maxTotal: Int,
+        hoveredProject: Binding<String?>
+    ) -> some View {
+        let isHovered = hoveredProject.wrappedValue == item.project
+        return VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(item.project)
                     .font(.caption2)
@@ -322,7 +457,7 @@ private struct ProjectProfileChartView: View {
                 HStack(spacing: 6) {
                     ForEach(item.profiles, id: \.name) { profile in
                         let pct = Double(profile.tokens) / Double(item.total) * 100
-                        Text("\(profile.name) \(String(format: "%.0f", pct))%")
+                        Text("\(displayName(for: profile.name)) \(TokenFormatter.format(profile.tokens)) \(String(format: "%.0f", pct))%")
                             .font(.system(size: 8))
                             .foregroundStyle(.tertiary)
                     }
@@ -331,7 +466,24 @@ private struct ProjectProfileChartView: View {
             }
         }
         .onHover { isHovered in
-            hoveredProject = isHovered ? item.project : nil
+            hoveredProject.wrappedValue = isHovered ? item.project : nil
+        }
+    }
+
+    private func profileLegendRow(names: [String]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(names, id: \.self) { name in
+                HStack(spacing: 3) {
+                    Circle()
+                        .fill(profileColor(for: name))
+                        .frame(width: 5, height: 5)
+                    Text(displayName(for: name))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
         }
     }
 }
