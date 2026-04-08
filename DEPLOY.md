@@ -43,10 +43,10 @@ cd build && rm -f TokenGarden.zip && zip -r TokenGarden.zip TokenGarden.app && c
 ## Release
 
 ```bash
-git add build/TokenGarden.app build/TokenGarden.dmg build/TokenGarden.zip
+git add TokenGarden/Info.plist build/TokenGarden.app build/TokenGarden.dmg build/TokenGarden.zip
 git commit -m "build: vX.Y.Z release artifacts"
 git push hongchaemin main
-gh release create vX.Y.Z \
+unset GITHUB_TOKEN && gh release create vX.Y.Z \
   build/TokenGarden.dmg \
   build/TokenGarden.zip \
   images/token-garden-drag.png \
@@ -54,6 +54,9 @@ gh release create vX.Y.Z \
   --title "vX.Y.Z" \
   --notes "릴리즈 노트"
 ```
+
+> **주의:** `GITHUB_TOKEN` 환경변수가 설정된 경우 `gh`가 해당 토큰(다른 계정)을 우선 사용합니다.
+> `unset GITHUB_TOKEN` 후 실행하거나, 미리 `gh auth switch --user HongChaeMin`으로 전환하세요.
 
 **릴리즈 assets 체크리스트:**
 - `TokenGarden.dmg` — 설치 파일
@@ -68,6 +71,7 @@ gh release create vX.Y.Z \
 - DMG 레이아웃(배경, 아이콘 위치)은 `build/dmg_rw.dmg`에 저장됨 — 직접 만들지 말고 RW DMG에서 앱만 교체
 - **ad-hoc sign은 필수** — 바이너리 교체 후 `codesign`을 빼먹으면 기존 서명과 바이너리 해시가 불일치하여 macOS가 설치/실행을 차단함 (서명 없는 것보다 깨진 서명이 더 심각)
 - 설치 후 처음 실행 시 Gatekeeper가 차단하면 **우클릭 → 열기** 로 실행
+- SwiftData 스키마 변경 시 새 필드에 반드시 inline 기본값 지정 (`var foo: String = "default"`) — 미지정 시 마이그레이션 실패로 기존 데이터 전체 소실
 
 ## DMG 배경 이미지 트러블슈팅
 
