@@ -9,15 +9,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var popover: NSPopover!
     private var menuBarController: MenuBarController!
     private var logWatcher: LogWatcher!
+    private var codexWatcher: CodexWatcher!
     private var dataStore: TokenDataStore!
     private var modelContainer: ModelContainer!
     private var animationTimer: Timer!
     private var updateChecker: UpdateChecker!
     private var profileManager: ProfileManager!
+    private var activeProfileObserver: NSObjectProtocol?
 
     // Session refresh: background thread writes, main thread reads
-    private nonisolated(unsafe) let refreshLock = NSLock()
-    private nonisolated(unsafe) var pendingActiveProjects: Set<String>?
+    private let refreshLock = NSLock()
+    private nonisolated(unsafe) var pendingClaudeProjects: Set<String>?
+    private nonisolated(unsafe) var pendingCodexProjects: Set<String>?
     private var lastBalancedSessionId: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -32,7 +35,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         // SwiftData
-        let schema = Schema([DailyUsage.self, ProjectUsage.self, SessionUsage.self, HourlyUsage.self, Profile.self, ProfileTokenUsage.self])
+        let schema = Schema([DailyUsage.self, ProjectUsage.self, SessionUsage.self, HourlyUsage.self, Profile.self, ProfileTokenUsage.self, CodexProfile.self])
         let storeURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("TokenGarden", isDirectory: true)
             .appendingPathComponent("TokenGarden.store")
@@ -42,24 +45,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             modelContainer = try ModelContainer(for: schema, configurations: [config])
         } catch {
             // Backup profiles before reset
-            let backupProfiles = Self.backupProfiles(from: storeURL)
+            let backup = Self.backupProfiles(from: storeURL)
 
             // New model added — reset store and backfill offsets to rebuild from logs
             let storeDir = storeURL.deletingLastPathComponent()
             try? FileManager.default.removeItem(at: storeDir)
             try? FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
             UserDefaults.standard.removeObject(forKey: "LogWatcherOffsets")
+            CodexWatcher.clearSnapshots()
             modelContainer = try! ModelContainer(for: schema, configurations: [config])
 
             // Restore profiles after reset
-            Self.restoreProfiles(backupProfiles, into: modelContainer.mainContext)
+            Self.restoreProfiles(backup, into: modelContainer.mainContext)
         }
         dataStore = TokenDataStore(modelContainer: modelContainer)
+        Self.restoreCodexProfiles(into: modelContainer.mainContext)
 
         // Profile Manager
         profileManager = ProfileManager(modelContext: modelContainer.mainContext)
         if let activeProfile = profileManager.activeProfile {
             dataStore.activeProfileName = activeProfile.name
+        }
+        activeProfileObserver = NotificationCenter.default.addObserver(
+            forName: .activeProfileNameDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            if let name = notification.userInfo?["profileName"] as? String {
+                Task { @MainActor [weak self] in
+                    self?.dataStore.activeProfileName = name
+                }
+            }
         }
         profileManager.prefetchAllUsageLimits()
 
@@ -139,18 +155,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         logWatcher.start()
 
+        // Codex Watcher
+        codexWatcher = CodexWatcher { [weak self] event in
+            self?.dataStore.recordCodex(event)
+            self?.menuBarController.onTokenUsage(at: event.updatedAt, tokens: event.tokensUsed)
+        }
+        // Migrate legacy Codex placeholder profileName records to "Codex/<email>"
+        if let email = CodexWatcher.currentAccount()?.email {
+            dataStore.migrateCodexProfileNames(to: email)
+        }
+        codexWatcher.start()
+
         // Background session refresh loop
         startSessionRefreshLoop()
 
         profileManager.startTokenKeeper()
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        if let activeProfileObserver {
+            NotificationCenter.default.removeObserver(activeProfileObserver)
+        }
+    }
+
     /// Run refresh immediately on background, result applied on next timer tick
     private func triggerRefresh() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let projects = TokenDataStore.getActiveClaudeProjects()
+            let claudeProjects = TokenDataStore.getActiveClaudeProjects()
+            let codexProjects = TokenDataStore.getActiveCodexProjects()
             self?.refreshLock.lock()
-            self?.pendingActiveProjects = projects
+            self?.pendingClaudeProjects = claudeProjects
+            self?.pendingCodexProjects = codexProjects
             self?.refreshLock.unlock()
         }
     }
@@ -161,10 +196,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Thread.detachNewThread { [weak self] in
 
             while true {
-                let projects = TokenDataStore.getActiveClaudeProjects()
+                let claudeProjects = TokenDataStore.getActiveClaudeProjects()
+                let codexProjects = TokenDataStore.getActiveCodexProjects()
 
                 self?.refreshLock.lock()
-                self?.pendingActiveProjects = projects
+                self?.pendingClaudeProjects = claudeProjects
+                self?.pendingCodexProjects = codexProjects
                 self?.refreshLock.unlock()
                 Thread.sleep(forTimeInterval: 30)
             }
@@ -173,13 +210,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func applyPendingRefreshIfNeeded() {
         refreshLock.lock()
-        let projects = pendingActiveProjects
-        pendingActiveProjects = nil
+        let claudeProjects = pendingClaudeProjects
+        let codexProjects = pendingCodexProjects
+        pendingClaudeProjects = nil
+        pendingCodexProjects = nil
         refreshLock.unlock()
 
-        if let projects {
-
-            dataStore.applyActiveStatus(activeProjects: projects)
+        if let claudeProjects {
+            dataStore.applyActiveStatus(source: "claude", activeProjects: claudeProjects)
+        }
+        if let codexProjects {
+            dataStore.applyActiveStatus(source: "codex", activeProjects: codexProjects)
         }
     }
 
@@ -197,12 +238,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let colorName: String
     }
 
-    private static func backupProfiles(from storeURL: URL) -> [ProfileBackup] {
+    private struct CodexProfileBackup: Codable {
+        let name: String
+        let email: String
+        let authData: Data
+        let isActive: Bool
+    }
+
+    private struct ProfileRestoreBackup {
+        let claudeProfiles: [ProfileBackup]
+        let codexProfiles: [CodexProfileBackup]
+    }
+
+    private static func backupProfiles(from storeURL: URL) -> ProfileRestoreBackup {
         // Read profiles directly via SQLite before DB is destroyed
         var db: OpaquePointer?
-        guard sqlite3_open(storeURL.path, &db) == SQLITE_OK else { return [] }
+        guard sqlite3_open(storeURL.path, &db) == SQLITE_OK else {
+            return ProfileRestoreBackup(claudeProfiles: [], codexProfiles: [])
+        }
         defer { sqlite3_close(db) }
 
+        return ProfileRestoreBackup(
+            claudeProfiles: backupClaudeProfiles(from: db),
+            codexProfiles: backupCodexProfiles(from: db)
+        )
+    }
+
+    private static func backupClaudeProfiles(from db: OpaquePointer?) -> [ProfileBackup] {
         var stmt: OpaquePointer?
         let sql = "SELECT ZNAME, ZEMAIL, ZPLAN, ZCREDENTIALSJSON, ZISACTIVE, ZMONTHLYLIMIT, ZCOLORNAME FROM ZPROFILE"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -213,36 +275,106 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let name = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
             let email = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
             let plan = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
-            let credLen = sqlite3_column_bytes(stmt, 3)
-            let credData: Data
-            if credLen > 0, let ptr = sqlite3_column_blob(stmt, 3) {
-                credData = Data(bytes: ptr, count: Int(credLen))
-            } else {
-                credData = Data()
-            }
             let isActive = sqlite3_column_int(stmt, 4) != 0
             let monthlyLimit = Int(sqlite3_column_int(stmt, 5))
             let colorName = sqlite3_column_text(stmt, 6).map { String(cString: $0) } ?? "blue"
 
             guard !name.isEmpty else { continue }
             backups.append(ProfileBackup(
-                name: name, email: email, plan: plan,
-                credentialsJSON: credData, isActive: isActive,
-                monthlyLimit: monthlyLimit, colorName: colorName
+                name: name,
+                email: email,
+                plan: plan,
+                credentialsJSON: sqliteBlobData(stmt: stmt, column: 3),
+                isActive: isActive,
+                monthlyLimit: monthlyLimit,
+                colorName: colorName
             ))
         }
         return backups
     }
 
-    private static func restoreProfiles(_ backups: [ProfileBackup], into context: ModelContext) {
-        for b in backups {
+    private static func backupCodexProfiles(from db: OpaquePointer?) -> [CodexProfileBackup] {
+        var stmt: OpaquePointer?
+        let sql = "SELECT ZNAME, ZEMAIL, ZAUTHDATA, ZISACTIVE FROM ZCODEXPROFILE"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+
+        var backups: [CodexProfileBackup] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let name = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+            let email = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+            guard !email.isEmpty else { continue }
+            backups.append(CodexProfileBackup(
+                name: name.isEmpty ? email : name,
+                email: email,
+                authData: sqliteBlobData(stmt: stmt, column: 2),
+                isActive: sqlite3_column_int(stmt, 3) != 0
+            ))
+        }
+        return backups
+    }
+
+    private static func sqliteBlobData(stmt: OpaquePointer?, column: Int32) -> Data {
+        let length = sqlite3_column_bytes(stmt, column)
+        guard length > 0, let ptr = sqlite3_column_blob(stmt, column) else {
+            return Data()
+        }
+        return Data(bytes: ptr, count: Int(length))
+    }
+
+    private static func restoreProfiles(_ backup: ProfileRestoreBackup, into context: ModelContext) {
+        for b in backup.claudeProfiles {
             let profile = Profile(name: b.name, email: b.email, plan: b.plan, credentialsJSON: b.credentialsJSON)
             profile.isActive = b.isActive
             profile.monthlyLimit = b.monthlyLimit
             profile.colorName = b.colorName
             context.insert(profile)
         }
+
+        for b in backup.codexProfiles {
+            let profile = CodexProfile(name: b.name, email: b.email, authData: b.authData)
+            profile.isActive = b.isActive
+            context.insert(profile)
+        }
         try? context.save()
+    }
+
+    private static func restoreCodexProfiles(into context: ModelContext) {
+        let existingProfiles = (try? context.fetch(FetchDescriptor<CodexProfile>())) ?? []
+        var existingEmails = Set(existingProfiles.map(\.email))
+        var inserted = false
+
+        if let account = CodexWatcher.currentAccount(), !existingEmails.contains(account.email) {
+            let displayName = account.name == "Unknown"
+                ? account.email.components(separatedBy: "@").first ?? "Codex"
+                : account.name
+            let profile = CodexProfile(name: displayName, email: account.email, authData: account.authData)
+            profile.isActive = true
+            context.insert(profile)
+            existingEmails.insert(account.email)
+            inserted = true
+        }
+
+        let projectUsages = (try? context.fetch(FetchDescriptor<ProjectUsage>())) ?? []
+        let codexEmails = Set(projectUsages.compactMap { usage -> String? in
+            guard let profileName = usage.profileName, profileName.hasPrefix("Codex/") else { return nil }
+            return String(profileName.dropFirst("Codex/".count))
+        })
+
+        for email in codexEmails where !existingEmails.contains(email) {
+            let profile = CodexProfile(
+                name: email.components(separatedBy: "@").first ?? email,
+                email: email,
+                authData: Data()
+            )
+            context.insert(profile)
+            existingEmails.insert(email)
+            inserted = true
+        }
+
+        if inserted {
+            try? context.save()
+        }
     }
 
     @objc func togglePopover() {

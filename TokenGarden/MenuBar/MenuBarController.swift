@@ -33,13 +33,17 @@ class MenuBarController: ObservableObject {
     }
 
     func onTokenEvent(_ event: TokenEvent) {
+        onTokenUsage(at: event.timestamp, tokens: event.totalTokens)
+    }
+
+    func onTokenUsage(at timestamp: Date, tokens: Int) {
         let cal = Calendar.current
-        guard cal.isDateInToday(event.timestamp) else { return }
-        todayTokens += event.totalTokens
+        guard cal.isDateInToday(timestamp) else { return }
+        todayTokens += tokens
         refreshBucketHours()
-        let hour = cal.component(.hour, from: event.timestamp)
+        let hour = cal.component(.hour, from: timestamp)
         if let idx = bucketHours.firstIndex(of: hour) {
-            hourlyBuckets[idx] += event.totalTokens
+            hourlyBuckets[idx] += tokens
         }
         updateDisplay()
     }

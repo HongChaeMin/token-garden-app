@@ -35,16 +35,12 @@ class TokenDataStore: ObservableObject {
         daily.cacheReadTokens += event.cacheReadTokens
 
         // Hourly bucket
-        let hour = Calendar.current.component(.hour, from: event.timestamp)
-        let hourlyDescriptor = FetchDescriptor<HourlyUsage>(
-            predicate: #Predicate { $0.date == day && $0.hour == hour }
+        accumulateHourlyTokens(
+            day: day,
+            hour: Calendar.current.component(.hour, from: event.timestamp),
+            tokens: event.totalTokens,
+            source: "claude"
         )
-        if let existing = try? modelContext.fetch(hourlyDescriptor).first {
-            existing.tokens += event.totalTokens
-        } else {
-            let hourly = HourlyUsage(date: day, hour: hour, tokens: event.totalTokens)
-            modelContext.insert(hourly)
-        }
 
         if let projectName = event.projectName {
             let profile = activeProfileName
@@ -89,7 +85,8 @@ class TokenDataStore: ObservableObject {
                 let session = SessionUsage(
                     sessionId: sessionId,
                     projectName: event.projectName ?? "Unknown",
-                    startTime: event.timestamp
+                    startTime: event.timestamp,
+                    source: "claude"
                 )
                 session.totalTokens = event.totalTokens
                 session.lastTime = event.timestamp
@@ -104,6 +101,85 @@ class TokenDataStore: ObservableObject {
         }
     }
 
+    func recordCodex(_ event: CodexThreadEvent) {
+        let day = Calendar.current.startOfDay(for: event.updatedAt)
+
+        let descriptor = FetchDescriptor<DailyUsage>(
+            predicate: #Predicate { $0.date == day }
+        )
+        let daily: DailyUsage
+        if let existing = try? modelContext.fetch(descriptor).first {
+            daily = existing
+        } else {
+            daily = DailyUsage(date: day)
+            modelContext.insert(daily)
+        }
+        daily.codexTokens += event.tokensUsed
+        accumulateHourlyTokens(
+            day: day,
+            hour: Calendar.current.component(.hour, from: event.updatedAt),
+            tokens: event.tokensUsed,
+            source: "codex"
+        )
+
+        // Project breakdown — prefix "Codex/" to distinguish from Claude profiles
+        let codexProfileName = "Codex/" + event.accountEmail
+        if let existing = daily.projectBreakdowns.first(where: {
+            $0.projectName == event.projectName && $0.profileName == codexProfileName
+        }) {
+            existing.tokens += event.tokensUsed
+        } else {
+            let projectUsage = ProjectUsage(
+                projectName: event.projectName,
+                tokens: event.tokensUsed,
+                model: event.model,
+                profileName: codexProfileName
+            )
+            projectUsage.dailyUsage = daily
+            daily.projectBreakdowns.append(projectUsage)
+        }
+
+        let threadId = event.threadId
+        let sessionDescriptor = FetchDescriptor<SessionUsage>(
+            predicate: #Predicate { $0.sessionId == threadId }
+        )
+        if let session = try? modelContext.fetch(sessionDescriptor).first {
+            session.totalTokens += event.tokensUsed
+            session.lastTime = event.updatedAt
+            session.isActive = true
+            session.source = "codex"
+        } else {
+            let session = SessionUsage(
+                sessionId: event.threadId,
+                projectName: event.projectName,
+                startTime: event.updatedAt,
+                source: "codex"
+            )
+            session.totalTokens = event.tokensUsed
+            session.lastTime = event.updatedAt
+            session.isActive = true
+            modelContext.insert(session)
+        }
+
+        pendingSaveCount += 1
+        if pendingSaveCount >= Self.saveInterval {
+            try? modelContext.save()
+            pendingSaveCount = 0
+        }
+    }
+
+    private func accumulateHourlyTokens(day: Date, hour: Int, tokens: Int, source: String) {
+        let hourlyDescriptor = FetchDescriptor<HourlyUsage>(
+            predicate: #Predicate { $0.date == day && $0.hour == hour && $0.source == source }
+        )
+        if let existing = try? modelContext.fetch(hourlyDescriptor).first {
+            existing.tokens += tokens
+        } else {
+            let hourly = HourlyUsage(date: day, hour: hour, tokens: tokens, source: source)
+            modelContext.insert(hourly)
+        }
+    }
+
     func endSession(sessionId: String) {
         let descriptor = FetchDescriptor<SessionUsage>(
             predicate: #Predicate { $0.sessionId == sessionId }
@@ -114,16 +190,17 @@ class TokenDataStore: ObservableObject {
     }
 
     /// Apply active status with pre-fetched project names. Must be called on MainActor.
-    func applyActiveStatus(activeProjects: Set<String>) {
+    func applyActiveStatus(source: String, activeProjects: Set<String>) {
         let descriptor = FetchDescriptor<SessionUsage>()
         guard let sessions = try? modelContext.fetch(descriptor) else { return }
 
         for session in sessions {
+            guard session.source == source else { continue }
             session.isActive = false
 
             if activeProjects.contains(session.projectName) {
                 let projectSessions = sessions
-                    .filter { $0.projectName == session.projectName }
+                    .filter { $0.projectName == session.projectName && $0.source == source }
                     .sorted { $0.lastTime > $1.lastTime }
                 if projectSessions.first?.sessionId == session.sessionId {
                     session.isActive = true
@@ -133,14 +210,15 @@ class TokenDataStore: ObservableObject {
         try? modelContext.save()
     }
 
-    /// Returns project names for running claude processes. Safe to call from any thread.
+    /// Returns project names for running CLI processes. Safe to call from any thread.
     /// Single lsof call with all PIDs at once to minimize overhead.
-    nonisolated static func getActiveClaudeProjects() -> Set<String> {
-        // Step 1: get PIDs via ps
+    private nonisolated static func getActiveProjects(
+        matching: @escaping (_ command: String, _ args: String) -> Bool
+    ) -> Set<String> {
         let psPipe = Pipe()
         let psProc = Process()
         psProc.executableURL = URL(fileURLWithPath: "/bin/ps")
-        psProc.arguments = ["-eo", "pid,comm"]
+        psProc.arguments = ["-eo", "pid,comm,args"]
         psProc.standardOutput = psPipe
         psProc.standardError = FileHandle.nullDevice
 
@@ -152,14 +230,17 @@ class TokenDataStore: ObservableObject {
         var pids: [String] = []
         for line in psOutput.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasSuffix("/claude") || trimmed.hasSuffix(" claude") {
-                let parts = trimmed.split(separator: " ", maxSplits: 1)
-                if let pid = parts.first { pids.append(String(pid)) }
+            let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard parts.count >= 3 else { continue }
+            let pid = String(parts[0])
+            let command = String(parts[1])
+            let args = String(parts[2])
+            if matching(command, args) {
+                pids.append(pid)
             }
         }
         guard !pids.isEmpty else { return [] }
 
-        // Step 2: single lsof call with all PIDs
         let pipe = Pipe()
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
@@ -185,6 +266,37 @@ class TokenDataStore: ObservableObject {
         return projects
     }
 
+    nonisolated static func getActiveClaudeProjects() -> Set<String> {
+        getActiveProjects { command, args in
+            command.hasSuffix("/claude") || command == "claude" || args.hasSuffix("/claude") || args == "claude"
+        }
+    }
+
+    nonisolated static func getActiveCodexProjects() -> Set<String> {
+        getActiveProjects { command, args in
+            if command == "codex" || command.hasSuffix("/codex") {
+                return true
+            }
+            if command == "node" {
+                return args.contains("/bin/codex") || args.contains("/codex/codex")
+            }
+            return args.contains("/bin/codex") || args.contains("/codex/codex")
+        }
+    }
+
+    /// One-time migration: rename legacy Codex placeholder profile names to "Codex/<email>"
+    func migrateCodexProfileNames(to email: String) {
+        let newName = "Codex/" + email
+        let descriptor = FetchDescriptor<ProjectUsage>(
+            predicate: #Predicate { $0.profileName == "Codex" || $0.profileName == "Codex/Codex" }
+        )
+        guard let usages = try? modelContext.fetch(descriptor), !usages.isEmpty else { return }
+        for usage in usages {
+            usage.profileName = newName
+        }
+        try? modelContext.save()
+    }
+
     func flush() {
         if pendingSaveCount > 0 {
             try? modelContext.save()
@@ -202,53 +314,44 @@ class TokenDataStore: ObservableObject {
         return (try? modelContext.fetch(descriptor)) ?? []
     }
 
-    /// Returns 24 hourly token totals for a given day, computed from SessionUsage timestamps
-    func fetchHourlyTokens(for date: Date) -> [Int] {
+    /// Returns 24 hourly token totals for a given day from HourlyUsage.
+    func fetchHourlyTokens(for date: Date, source: String? = nil) -> [Int] {
         let cal = Calendar.current
         let dayStart = cal.startOfDay(for: date)
-        guard let dayEnd = cal.date(byAdding: .day, value: 1, to: dayStart) else {
-            return Array(repeating: 0, count: 24)
+        let descriptor: FetchDescriptor<HourlyUsage>
+        if let source {
+            descriptor = FetchDescriptor<HourlyUsage>(
+                predicate: #Predicate { $0.date == dayStart && $0.source == source }
+            )
+        } else {
+            descriptor = FetchDescriptor<HourlyUsage>(
+                predicate: #Predicate { $0.date == dayStart }
+            )
         }
-
-        let descriptor = FetchDescriptor<SessionUsage>(
-            predicate: #Predicate<SessionUsage> { session in
-                session.startTime < dayEnd && session.lastTime >= dayStart
-            }
-        )
-        guard let sessions = try? modelContext.fetch(descriptor), !sessions.isEmpty else {
+        guard let usages = try? modelContext.fetch(descriptor), !usages.isEmpty else {
             return Array(repeating: 0, count: 24)
         }
 
         var buckets = Array(repeating: 0, count: 24)
-        for session in sessions {
-            // Distribute tokens to the hour of startTime (simple attribution)
-            let hour = cal.component(.hour, from: max(session.startTime, dayStart))
-            buckets[hour] += session.totalTokens
+        for usage in usages where (0..<24).contains(usage.hour) {
+            buckets[usage.hour] += usage.tokens
         }
         return buckets
     }
 
     /// Returns token totals for the last 3 hours: [h-2, h-1, h]
-    func fetchHourlyBuckets() -> [Int] {
+    func fetchHourlyBuckets(source: String? = nil) -> [Int] {
         let cal = Calendar.current
         let now = Date()
         let currentHour = cal.component(.hour, from: now)
         let today = cal.startOfDay(for: now)
+        let todayBuckets = fetchHourlyTokens(for: today, source: source)
 
-        // Build hour start/end for last 3 hours
         var buckets = [0, 0, 0]
         for i in 0..<3 {
             let hour = currentHour - 2 + i
-            guard let hourStart = cal.date(bySettingHour: hour, minute: 0, second: 0, of: today),
-                  let hourEnd = cal.date(bySettingHour: hour, minute: 59, second: 59, of: today) else { continue }
-
-            let descriptor = FetchDescriptor<SessionUsage>(
-                predicate: #Predicate<SessionUsage> { session in
-                    session.lastTime >= hourStart && session.startTime <= hourEnd
-                }
-            )
-            if let sessions = try? modelContext.fetch(descriptor) {
-                buckets[i] = sessions.reduce(0) { $0 + $1.totalTokens }
+            if (0..<24).contains(hour) {
+                buckets[i] = todayBuckets[hour]
             }
         }
         return buckets
