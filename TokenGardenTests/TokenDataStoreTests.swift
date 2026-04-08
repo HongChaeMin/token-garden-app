@@ -5,7 +5,14 @@ import Foundation
 
 @Test @MainActor func recordTokenEvent() async throws {
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, SessionUsage.self, configurations: config)
+    let container = try ModelContainer(
+        for: DailyUsage.self,
+        ProjectUsage.self,
+        SessionUsage.self,
+        HourlyUsage.self,
+        ProfileTokenUsage.self,
+        configurations: config
+    )
     let store = TokenDataStore(modelContainer: container)
 
     let event = TokenEvent(
@@ -36,7 +43,14 @@ import Foundation
 
 @Test @MainActor func recordMultipleEventsAccumulate() async throws {
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, SessionUsage.self, configurations: config)
+    let container = try ModelContainer(
+        for: DailyUsage.self,
+        ProjectUsage.self,
+        SessionUsage.self,
+        HourlyUsage.self,
+        ProfileTokenUsage.self,
+        configurations: config
+    )
     let store = TokenDataStore(modelContainer: container)
 
     let event1 = TokenEvent(
@@ -66,7 +80,14 @@ import Foundation
 
 @Test @MainActor func fetchDailyUsagesForRange() async throws {
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, SessionUsage.self, configurations: config)
+    let container = try ModelContainer(
+        for: DailyUsage.self,
+        ProjectUsage.self,
+        SessionUsage.self,
+        HourlyUsage.self,
+        ProfileTokenUsage.self,
+        configurations: config
+    )
     let store = TokenDataStore(modelContainer: container)
 
     let calendar = Calendar.current
@@ -94,7 +115,14 @@ import Foundation
 
 @Test @MainActor func recordSessionUsage() async throws {
     let config = ModelConfiguration(isStoredInMemoryOnly: true)
-    let container = try ModelContainer(for: DailyUsage.self, ProjectUsage.self, SessionUsage.self, configurations: config)
+    let container = try ModelContainer(
+        for: DailyUsage.self,
+        ProjectUsage.self,
+        SessionUsage.self,
+        HourlyUsage.self,
+        ProfileTokenUsage.self,
+        configurations: config
+    )
     let store = TokenDataStore(modelContainer: container)
 
     let event1 = TokenEvent(
@@ -119,4 +147,48 @@ import Foundation
     #expect(sessions[0].sessionId == "session-abc")
     #expect(sessions[0].totalTokens == 450)
     #expect(sessions[0].projectName == "my-project")
+}
+
+@Test @MainActor func recordCodexEventUsesUpdatedAtForDailyAndHourlyUsage() async throws {
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    let container = try ModelContainer(
+        for: DailyUsage.self,
+        ProjectUsage.self,
+        SessionUsage.self,
+        HourlyUsage.self,
+        ProfileTokenUsage.self,
+        configurations: config
+    )
+    let store = TokenDataStore(modelContainer: container)
+
+    let timestamp = Calendar.current.date(from: DateComponents(year: 2026, month: 4, day: 7, hour: 15, minute: 30))!
+    let event = CodexThreadEvent(
+        threadId: "thread-1",
+        updatedAt: timestamp,
+        tokensUsed: 120,
+        projectName: "token-garden-app",
+        model: "gpt-5.4",
+        accountEmail: "dev@example.com"
+    )
+
+    store.recordCodex(event)
+    store.flush()
+
+    let context = ModelContext(container)
+    let dailyResults = try context.fetch(FetchDescriptor<DailyUsage>())
+    #expect(dailyResults.count == 1)
+    #expect(dailyResults[0].codexTokens == 120)
+    #expect(dailyResults[0].totalTokens == 120)
+    #expect(dailyResults[0].projectBreakdowns.count == 1)
+    #expect(dailyResults[0].projectBreakdowns[0].profileName == "Codex/dev@example.com")
+
+    let hourlyBuckets = store.fetchHourlyTokens(for: timestamp)
+    #expect(hourlyBuckets[15] == 120)
+    #expect(store.fetchHourlyTokens(for: timestamp, source: "codex")[15] == 120)
+    #expect(store.fetchHourlyTokens(for: timestamp, source: "claude")[15] == 0)
+
+    let sessions = try context.fetch(FetchDescriptor<SessionUsage>())
+    #expect(sessions.count == 1)
+    #expect(sessions[0].source == "codex")
+    #expect(sessions[0].isActive == true)
 }

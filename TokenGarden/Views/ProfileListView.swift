@@ -8,11 +8,18 @@ struct ProfileListView: View {
     @State private var newName = ""
     @State private var detectedAuth: ClaudeAuthInfo?
     @State private var isDetecting = false
+    @State private var errorMessage: String?
     @AppStorage("autoBalancingEnabled") private var autoBalancingEnabled = false
     @AppStorage("modelAutoBalancingEnabled") private var modelAutoBalancingEnabled = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+
             // Profile list
             if profiles.isEmpty {
                 Text("No profiles saved")
@@ -27,6 +34,13 @@ struct ProfileListView: View {
                             profile: profile,
                             monthlyTokens: profileManager.monthlyTokens(for: profile.name),
                             usageLimits: profileManager.usageLimitsCache[profile.name],
+                            onRename: { newName in
+                                if profileManager.renameProfile(from: profile.name, to: newName) {
+                                    errorMessage = nil
+                                } else {
+                                    errorMessage = "Failed to rename profile. Name may already be in use."
+                                }
+                            },
                             onSwitch: { profileManager.switchTo(profileName: profile.name) },
                             onDelete: { profileManager.delete(profileName: profile.name) }
                         )
@@ -147,12 +161,17 @@ struct ProfileListView: View {
     }
 }
 
+// MARK: - Claude profile row
+
 private struct ProfileRow: View {
     let profile: Profile
     let monthlyTokens: Int
     let usageLimits: UsageLimits?
+    let onRename: (String) -> Void
     let onSwitch: () -> Void
     let onDelete: () -> Void
+    @State private var isEditingName = false
+    @State private var draftName = ""
 
     private var usageRatio: Double {
         guard profile.monthlyLimit > 0 else { return 0 }
@@ -176,39 +195,64 @@ private struct ProfileRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // Header row
             HStack(spacing: 8) {
                 Circle()
                     .fill(profile.isActive ? Color.green : .gray.opacity(0.3))
                     .frame(width: 8, height: 8)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(profile.name)
-                        .font(.caption)
-                        .fontWeight(profile.isActive ? .medium : .regular)
+                    if isEditingName {
+                        TextField("Profile Name", text: $draftName)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.caption)
+                            .onSubmit(saveRename)
+                    } else {
+                        Text(profile.name)
+                            .font(.caption)
+                            .fontWeight(profile.isActive ? .medium : .regular)
+                    }
                     Text("\(profile.email) · \(profile.plan)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                Spacer()
-                if !profile.isActive {
-                    Button("Switch") { onSwitch() }
+                Spacer(minLength: 4)
+                HStack(spacing: 4) {
+                    if isEditingName {
+                        Button("Cancel") {
+                            draftName = profile.name
+                            isEditingName = false
+                        }
                         .controlSize(.mini)
+                        Button("Save", action: saveRename)
+                            .controlSize(.mini)
+                            .disabled(draftName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    } else {
+                        Button("Rename") {
+                            draftName = profile.name
+                            isEditingName = true
+                        }
+                        .controlSize(.mini)
+                    }
+                    if !profile.isActive {
+                        Button("Switch") { onSwitch() }
+                            .controlSize(.mini)
+                    }
+                    if profile.isActive {
+                        Text("Active")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                    }
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.caption2)
+                            .foregroundStyle(.red.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
                 }
-                if profile.isActive {
-                    Text("Active")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
-                }
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .font(.caption2)
-                        .foregroundStyle(.red.opacity(0.6))
-                }
-                .buttonStyle(.plain)
+                .fixedSize()
             }
 
             if let limits = usageLimits {
-                // Real-time usage from API
                 UsageLimitRow(
                     label: "5h session",
                     utilization: limits.fiveHourUtilization,
@@ -220,7 +264,6 @@ private struct ProfileRow: View {
                     resetLabel: resetLabel(for: limits.sevenDayResetAt)
                 )
             } else {
-                // Fallback: local monthly estimate
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 2)
@@ -246,6 +289,21 @@ private struct ProfileRow: View {
         }
         .padding(8)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .onAppear {
+            draftName = profile.name
+        }
+        .onChange(of: profile.name) { _, newValue in
+            if !isEditingName {
+                draftName = newValue
+            }
+        }
+    }
+
+    private func saveRename() {
+        let trimmedName = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        onRename(trimmedName)
+        isEditingName = false
     }
 }
 

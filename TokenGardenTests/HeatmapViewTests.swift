@@ -13,14 +13,14 @@ import Testing
     #expect(levels.count == 12)
     #expect(levels[0] == 0)
     #expect(levels[11] == 0)
-    #expect(levels[1] >= 1)
-    #expect(levels[10] == 4)
+    #expect(levels[1] == 1)
+    #expect(levels[10] == 7)
 }
 
 @Test func heatmapLevelAllSameUsage() {
     let totals = [500, 500, 500, 500]
     let levels = HeatmapCalculator.calculateLevels(dailyTotals: totals)
     for level in levels {
-        #expect(level == 4)
+        #expect(level == 7)
     }
 }

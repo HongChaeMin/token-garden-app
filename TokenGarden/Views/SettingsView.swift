@@ -16,29 +16,6 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Log Path
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Log Path")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    TextField("Path", text: $logPath)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.caption)
-                    Button("Browse...") {
-                        let panel = NSOpenPanel()
-                        panel.canChooseDirectories = true
-                        panel.canChooseFiles = false
-                        panel.allowsMultipleSelection = false
-                        if panel.runModal() == .OK, let url = panel.url {
-                            logPath = url.path
-                        }
-                    }
-                    .controlSize(.small)
-                }
-            }
-
-            Divider()
 
             // Menu Bar
             VStack(alignment: .leading, spacing: 6) {

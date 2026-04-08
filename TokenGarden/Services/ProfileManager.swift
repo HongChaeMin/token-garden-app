@@ -2,6 +2,10 @@ import Foundation
 import SwiftData
 import SwiftUI
 
+extension Notification.Name {
+    static let activeProfileNameDidChange = Notification.Name("activeProfileNameDidChange")
+}
+
 @MainActor
 class ProfileManager: ObservableObject {
     private let modelContext: ModelContext
@@ -68,6 +72,60 @@ class ProfileManager: ObservableObject {
         modelContext.delete(profile)
         try? modelContext.save()
         if wasActive { activeProfile = nil }
+        return true
+    }
+
+    @discardableResult
+    func renameProfile(from oldName: String, to newName: String) -> Bool {
+        let trimmedName = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return false }
+        guard trimmedName != oldName else { return true }
+
+        let duplicateDescriptor = FetchDescriptor<Profile>(
+            predicate: #Predicate { $0.name == trimmedName }
+        )
+        if let duplicate = try? modelContext.fetch(duplicateDescriptor).first, duplicate.name != oldName {
+            return false
+        }
+
+        let descriptor = FetchDescriptor<Profile>(
+            predicate: #Predicate { $0.name == oldName }
+        )
+        guard let profile = try? modelContext.fetch(descriptor).first else { return false }
+
+        let tokenUsageDescriptor = FetchDescriptor<ProfileTokenUsage>(
+            predicate: #Predicate { $0.profileName == oldName }
+        )
+        let projectUsageDescriptor = FetchDescriptor<ProjectUsage>(
+            predicate: #Predicate { $0.profileName == oldName }
+        )
+
+        let tokenUsages = (try? modelContext.fetch(tokenUsageDescriptor)) ?? []
+        let projectUsages = (try? modelContext.fetch(projectUsageDescriptor)) ?? []
+
+        for usage in tokenUsages {
+            usage.profileName = trimmedName
+        }
+        for usage in projectUsages {
+            usage.profileName = trimmedName
+        }
+
+        profile.name = trimmedName
+        try? modelContext.save()
+
+        if let cached = usageLimitsCache.removeValue(forKey: oldName) {
+            usageLimitsCache[trimmedName] = cached
+        }
+
+        if activeProfile?.persistentModelID == profile.persistentModelID {
+            activeProfile = profile
+            NotificationCenter.default.post(
+                name: .activeProfileNameDidChange,
+                object: self,
+                userInfo: ["profileName": trimmedName]
+            )
+        }
+
         return true
     }
 
