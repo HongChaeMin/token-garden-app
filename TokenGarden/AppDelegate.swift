@@ -66,11 +66,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let activeProfile = profileManager.activeProfile {
             dataStore.activeProfileName = activeProfile.name
         }
-        // Seed email→profileName registry for accurate event attribution
-        let allProfilesDesc = FetchDescriptor<Profile>()
-        if let allProfiles = try? modelContainer.mainContext.fetch(allProfilesDesc) {
-            dataStore.updateProfileRegistry(allProfiles)
-        }
+        dataStore.updateProfileRegistry(profileManager.allProfiles())
         activeProfileObserver = NotificationCenter.default.addObserver(
             forName: .activeProfileNameDidChange,
             object: nil,

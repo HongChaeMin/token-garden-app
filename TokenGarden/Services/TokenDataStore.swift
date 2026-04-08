@@ -18,7 +18,6 @@ class TokenDataStore: ObservableObject {
             profiles.map { ($0.email, $0.name) },
             uniquingKeysWith: { first, _ in first }
         )
-        // Invalidate email cache so next event re-resolves
         cachedEmailAt = .distantPast
     }
 

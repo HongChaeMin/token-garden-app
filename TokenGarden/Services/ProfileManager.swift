@@ -23,6 +23,10 @@ class ProfileManager: ObservableObject {
         self.activeProfile = Self.fetchActive(context: modelContext)
     }
 
+    func allProfiles() -> [Profile] {
+        (try? modelContext.fetch(FetchDescriptor<Profile>())) ?? []
+    }
+
     private static func fetchActive(context: ModelContext) -> Profile? {
         let descriptor = FetchDescriptor<Profile>(
             predicate: #Predicate { $0.isActive == true }
