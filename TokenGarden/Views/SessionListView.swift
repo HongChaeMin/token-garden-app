@@ -1,20 +1,38 @@
 import SwiftUI
 import SwiftData
 
+enum SessionSource {
+    case claude
+    case codex
+}
+
 struct SessionListView: View {
-    @Query(
-        filter: #Predicate<SessionUsage> { $0.isActive == true },
-        sort: \SessionUsage.lastTime,
-        order: .reverse
-    ) private var activeSessions: [SessionUsage]
+    let source: SessionSource
+    @Query(sort: \SessionUsage.lastTime, order: .reverse) private var allSessions: [SessionUsage]
 
     @State private var isExpanded = false
+
+    private var activeSessions: [SessionUsage] {
+        switch source {
+        case .claude:
+            return allSessions.filter { $0.source == "claude" && $0.isActive }
+        case .codex:
+            return allSessions.filter { $0.source == "codex" && $0.isActive }
+        }
+    }
+
+    private var title: String {
+        switch source {
+        case .claude: return "Active Sessions"
+        case .codex: return "Active Threads"
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button(action: { isExpanded.toggle() }) {
                 HStack {
-                    Label("Active Sessions", systemImage: "bolt.fill")
+                    Label(title, systemImage: "bolt.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text("\(activeSessions.count)")
@@ -32,7 +50,7 @@ struct SessionListView: View {
 
             if isExpanded {
                 if activeSessions.isEmpty {
-                    Text("No active sessions")
+                    Text(source == .claude ? "No active sessions" : "No active threads")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .padding(.vertical, 4)

@@ -28,9 +28,9 @@ struct StatsView: View {
 
             if isExpanded {
                 VStack(spacing: 6) {
-                    statsRow(label: "Today", value: todayTokens)
-                    statsRow(label: "This Week", value: weekTokens)
-                    statsRow(label: "This Month", value: monthTokens)
+                    statsRow(label: "Today", tokens: todayTokens)
+                    statsRow(label: "This Week", tokens: weekTokens)
+                    statsRow(label: "This Month", tokens: monthTokens)
                 }
             }
         }
@@ -38,15 +38,17 @@ struct StatsView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func statsRow(label: String, value: Int) -> some View {
-        HStack {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(TokenFormatter.format(value))
-                .font(.caption.monospacedDigit())
-                .fontWeight(.medium)
+    private func statsRow(label: String, tokens: Int) -> some View {
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(TokenFormatter.format(tokens))
+                    .font(.caption.monospacedDigit())
+                    .fontWeight(.medium)
+            }
         }
     }
 }

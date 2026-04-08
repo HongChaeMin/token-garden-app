@@ -6,16 +6,23 @@ enum ProjectTimeRange: String, CaseIterable {
     case month = "Month"
 }
 
+struct ProjectSourceBreakdown {
+    let name: String
+    let totalTokens: Int
+    let claudeTokens: Int
+    let codexTokens: Int
+}
+
 struct ProjectListView: View {
-    let todayProjects: [(name: String, tokens: Int)]
-    let weekProjects: [(name: String, tokens: Int)]
-    let monthProjects: [(name: String, tokens: Int)]
-    var selectedDayProjects: [(name: String, tokens: Int)]?
+    let todayProjects: [ProjectSourceBreakdown]
+    let weekProjects: [ProjectSourceBreakdown]
+    let monthProjects: [ProjectSourceBreakdown]
+    var selectedDayProjects: [ProjectSourceBreakdown]?
     var selectedDayLabel: String?
     @State private var selectedRange: ProjectTimeRange = .week
     @State private var isExpanded = false
 
-    private var activeProjects: [(name: String, tokens: Int)] {
+    private var activeProjects: [ProjectSourceBreakdown] {
         if let selected = selectedDayProjects {
             return selected
         }
@@ -27,7 +34,7 @@ struct ProjectListView: View {
     }
 
     private var totalTokens: Int {
-        activeProjects.reduce(0) { $0 + $1.tokens }
+        activeProjects.reduce(0) { $0 + $1.totalTokens }
     }
 
     var body: some View {
@@ -81,22 +88,22 @@ struct ProjectListView: View {
                         .foregroundStyle(.tertiary)
                         .padding(.vertical, 4)
                 } else {
-                    let items = activeProjects.sorted(by: { $0.tokens > $1.tokens })
+                    let items = activeProjects.sorted(by: { $0.totalTokens > $1.totalTokens })
                     let content = VStack(spacing: 0) {
                         ForEach(items, id: \.name) { project in
                             HStack {
                                 Text(project.name)
-                                    .font(.caption)
+                                    .font(.caption2)
                                     .lineLimit(1)
                                 Spacer()
-                                Text(TokenFormatter.format(project.tokens))
-                                    .font(.caption2.monospacedDigit())
+                                let pct = totalTokens > 0 ? Int(Double(project.totalTokens) / Double(totalTokens) * 100) : 0
+                                Text(TokenFormatter.format(project.totalTokens))
+                                    .font(.system(size: 10).monospacedDigit())
                                     .foregroundStyle(.secondary)
-                                let pct = totalTokens > 0 ? Int(Double(project.tokens) / Double(totalTokens) * 100) : 0
                                 Text("\(pct)%")
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 30, alignment: .trailing)
+                                    .font(.system(size: 10).monospacedDigit())
+                                    .foregroundStyle(.tertiary)
+                                    .frame(width: 28, alignment: .trailing)
                             }
                             .padding(.vertical, 2)
                         }

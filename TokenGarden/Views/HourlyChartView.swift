@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HourlyChartView: View {
     let hourlyTokens: [Int]
+    var title: String = "Hourly"
     var isToday: Bool = true
     @State private var isExpanded = false
     @State private var hoveredHour: Int?
@@ -22,7 +23,7 @@ struct HourlyChartView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Label("Hourly", systemImage: "clock")
+                Label(title, systemImage: "clock")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
