@@ -8,7 +8,7 @@ class DailyUsage {
     var outputTokens: Int
     var cacheCreationTokens: Int
     var cacheReadTokens: Int
-    var codexTokens: Int
+    var codexTokens: Int = 0
     @Relationship(deleteRule: .cascade, inverse: \ProjectUsage.dailyUsage)
     var projectBreakdowns: [ProjectUsage]
 

@@ -6,7 +6,7 @@ class HourlyUsage {
     var date: Date
     var hour: Int
     var tokens: Int
-    var source: String
+    var source: String = "claude"
 
     init(date: Date, hour: Int, tokens: Int = 0, source: String = "claude") {
         self.date = date

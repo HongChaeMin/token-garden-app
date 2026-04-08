@@ -164,6 +164,14 @@ class ProfileManager: ObservableObject {
         _ = credentialsManager.writeCredentials(target.credentialsJSON)
 
         usageLimitsCache.removeValue(forKey: target.name)
+
+        // Notify dataStore to update activeProfileName
+        NotificationCenter.default.post(
+            name: .activeProfileNameDidChange,
+            object: self,
+            userInfo: ["profileName": target.name]
+        )
+
         return true
     }
 

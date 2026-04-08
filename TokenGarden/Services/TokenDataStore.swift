@@ -7,7 +7,32 @@ class TokenDataStore: ObservableObject {
     private let modelContext: ModelContext
     private var pendingSaveCount = 0
     var activeProfileName: String?
+    private var emailToProfileName: [String: String] = [:]
+    private var cachedEmail: String?
+    private var cachedEmailAt: Date = .distantPast
     private static let saveInterval = 10
+    private static let emailCacheTTL: TimeInterval = 60
+
+    func updateProfileRegistry(_ profiles: [Profile]) {
+        emailToProfileName = Dictionary(
+            profiles.map { ($0.email, $0.name) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        // Invalidate email cache so next event re-resolves
+        cachedEmailAt = .distantPast
+    }
+
+    private func resolveProfileName() -> String? {
+        let now = Date()
+        if now.timeIntervalSince(cachedEmailAt) > Self.emailCacheTTL {
+            cachedEmail = CredentialsManager.fetchAuthStatus()?.email
+            cachedEmailAt = now
+        }
+        if let email = cachedEmail, let name = emailToProfileName[email] {
+            return name
+        }
+        return activeProfileName
+    }
 
     init(modelContainer: ModelContainer) {
         self.modelContainer = modelContainer
@@ -42,10 +67,11 @@ class TokenDataStore: ObservableObject {
             source: "claude"
         )
 
+        let resolvedProfile = resolveProfileName()
+
         if let projectName = event.projectName {
-            let profile = activeProfileName
             if let existing = daily.projectBreakdowns.first(where: {
-                $0.projectName == projectName && $0.profileName == profile
+                $0.projectName == projectName && $0.profileName == resolvedProfile
             }) {
                 existing.tokens += event.totalTokens
             } else {
@@ -53,7 +79,7 @@ class TokenDataStore: ObservableObject {
                     projectName: projectName,
                     tokens: event.totalTokens,
                     model: event.model,
-                    profileName: profile
+                    profileName: resolvedProfile
                 )
                 projectUsage.dailyUsage = daily
                 daily.projectBreakdowns.append(projectUsage)
@@ -61,7 +87,7 @@ class TokenDataStore: ObservableObject {
         }
 
         // Profile token tracking
-        if let profileName = activeProfileName {
+        if let profileName = resolvedProfile {
             let profileDescriptor = FetchDescriptor<ProfileTokenUsage>(
                 predicate: #Predicate { $0.profileName == profileName && $0.date == day }
             )

@@ -8,7 +8,7 @@ class SessionUsage {
     var totalTokens: Int
     var startTime: Date
     var lastTime: Date
-    var source: String
+    var source: String = "claude"
     var isActive: Bool = true
 
     init(sessionId: String, projectName: String, startTime: Date, source: String = "claude") {
