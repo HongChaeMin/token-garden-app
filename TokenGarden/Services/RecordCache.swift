@@ -22,8 +22,9 @@ final class RecordCache {
     /// Clear the day-keyed buckets when a new calendar day is encountered.
     /// Session cache is untouched — sessionIds don't roll over at midnight.
     func invalidateIfDayChanged(to newDay: Date) {
-        guard newDay != day else { return }
-        day = newDay
+        let normalizedDay = Calendar.current.startOfDay(for: newDay)
+        guard normalizedDay != day else { return }
+        day = normalizedDay
         daily = nil
         hourly.removeAll(keepingCapacity: true)
         profileTokens.removeAll(keepingCapacity: true)
