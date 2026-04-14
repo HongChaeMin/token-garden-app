@@ -13,6 +13,8 @@ class ProfileManager: ObservableObject {
 
     @Published var activeProfile: Profile?
     @Published var usageLimitsCache: [String: UsageLimits] = [:]  // profileName → limits
+    @Published var loadingProfiles: Set<String> = []
+    @Published var switchError: String?
     @Published var currentModel: String = ClaudeSettingsManager.currentModel() ?? "opus"
     private let cacheTTL: TimeInterval = 300  // 5 minutes
     private let modelDowngradeThreshold: Double = 0.80
@@ -46,12 +48,13 @@ class ProfileManager: ObservableObject {
             existing.forEach { $0.isActive = false }
         }
 
-        // Update existing profile if name matches, otherwise create new
-        let existingDesc = FetchDescriptor<Profile>(predicate: #Predicate { $0.name == name })
+        // Update existing profile if email matches, otherwise create new
+        let email = authInfo.email
+        let existingDesc = FetchDescriptor<Profile>(predicate: #Predicate { $0.email == email })
         let profile: Profile
         if let existing = try? modelContext.fetch(existingDesc).first {
+            existing.name = name
             existing.credentialsJSON = credentials
-            existing.email = authInfo.email
             existing.plan = authInfo.plan
             existing.isActive = true
             profile = existing
@@ -137,10 +140,18 @@ class ProfileManager: ObservableObject {
 
     @discardableResult
     func switchTo(profileName: String) -> Bool {
+        switchError = nil
         let descriptor = FetchDescriptor<Profile>(
             predicate: #Predicate { $0.name == profileName }
         )
         guard let target = try? modelContext.fetch(descriptor).first else { return false }
+
+        // Validate stored credentials before switching
+        guard !target.credentialsJSON.isEmpty,
+              CredentialsManager.oauthToken(from: target.credentialsJSON) != nil else {
+            switchError = "No credentials saved for \"\(profileName)\". Save this account first."
+            return false
+        }
 
         // Save current keychain credentials to the outgoing profile
         // (Claude Code may have refreshed the token since we last saved)
@@ -165,7 +176,10 @@ class ProfileManager: ObservableObject {
         try? modelContext.save()
 
         // Write target's credentials to keychain
-        _ = credentialsManager.writeCredentials(target.credentialsJSON)
+        let writeOK = credentialsManager.writeCredentials(target.credentialsJSON)
+        if !writeOK {
+            switchError = "Failed to write credentials to keychain."
+        }
 
         usageLimitsCache.removeValue(forKey: target.name)
 
@@ -175,6 +189,26 @@ class ProfileManager: ObservableObject {
             object: self,
             userInfo: ["profileName": target.name]
         )
+
+        // Refresh token in background — stored accessToken may be expired.
+        // claude --print-access-token uses the refresh token to get a fresh one
+        // and writes it back to keychain automatically.
+        let switchedName = target.name
+        let credsMgr = credentialsManager
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            _ = CredentialsManager.refreshOAuthToken()
+            // Persist the freshly-written keychain credentials back into the profile
+            if let fresh = credsMgr.readCredentials() {
+                DispatchQueue.main.async {
+                    self?.updateStoredCredentials(name: switchedName, credentials: fresh)
+                    // Fetch usage limits for the switched profile with the fresh token
+                    if let profile = self?.allProfiles().first(where: { $0.name == switchedName }) {
+                        self?.usageLimitsCache.removeValue(forKey: switchedName)
+                        self?.refreshUsageLimits(for: profile)
+                    }
+                }
+            }
+        }
 
         return true
     }
@@ -260,6 +294,8 @@ class ProfileManager: ObservableObject {
         let profileName = profile.name
         let isActive = profile.name == activeProfile?.name
 
+        loadingProfiles.insert(profileName)
+
         let credsMgr = credentialsManager
         // Task.detached replaces DispatchQueue.global — the underlying fetch
         // now suspends via async/await instead of blocking a GCD worker on a
@@ -274,7 +310,10 @@ class ProfileManager: ObservableObject {
                 token = CredentialsManager.oauthToken(from: creds)
             }
 
-            guard let token else { return }
+            guard let token else {
+                _ = await MainActor.run { self?.loadingProfiles.remove(profileName) }
+                return
+            }
             let limits = await CredentialsManager.fetchUsageLimits(oauthToken: token)
 
             // If the active profile succeeded, refresh stored credentials from keychain
@@ -284,9 +323,14 @@ class ProfileManager: ObservableObject {
                 }
             }
 
-            if let limits {
-                await MainActor.run {
+            await MainActor.run {
+                self?.loadingProfiles.remove(profileName)
+                if let limits {
                     self?.usageLimitsCache[profileName] = limits
+                    // Re-evaluate balancing now that fresh data is available
+                    if UserDefaults.standard.bool(forKey: "autoBalancingEnabled") {
+                        self?.balanceIfNeeded()
+                    }
                 }
             }
         }

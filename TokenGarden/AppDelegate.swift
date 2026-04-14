@@ -17,6 +17,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var profileManager: ProfileManager!
     private var overviewViewModel: OverviewViewModel!
     private var activeProfileObserver: NSObjectProtocol?
+    private var usagePrefetchTimer: Timer?
 
     // Session refresh: background task writes, main thread reads
     private let refreshLock = NSLock()
@@ -96,6 +97,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         profileManager.prefetchAllUsageLimits()
+        usagePrefetchTimer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.profileManager.prefetchAllUsageLimits()
+            }
+        }
 
         // Status Item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
