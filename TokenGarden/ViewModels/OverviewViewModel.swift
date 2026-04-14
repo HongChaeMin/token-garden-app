@@ -101,10 +101,8 @@ final class OverviewViewModel {
         }
         selectedDateTask = Task { [weak self] in
             guard let self else { return }
-            async let hourly = self.repository.loadHourlyTokensBySource(for: date)
-            async let projects = self.repository.loadProjects(for: date)
-            let h = await hourly
-            let p = await projects
+            let h = await self.repository.loadHourlyTokensBySource(for: date)
+            let p = await self.repository.loadProjects(for: date)
             if Task.isCancelled { return }
             self.activeClaudeHourlyTokens = h.claude
             self.activeCodexHourlyTokens = h.codex
