@@ -56,8 +56,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             CodexWatcher.clearSnapshots()
             modelContainer = try! ModelContainer(for: schema, configurations: [config])
 
-            // Restore profiles after reset (no-op if backup was unreliable and empty)
-            Self.restoreProfiles(backup, into: modelContainer.mainContext)
+            // Only restore when the backup is trustworthy — skip on missing file,
+            // schema mismatch, or open failure, where the archived `.corrupted-*`
+            // files are the authoritative source for manual recovery.
+            if backup.didReadDatabase {
+                Self.restoreProfiles(backup, into: modelContainer.mainContext)
+            }
         }
         dataStore = TokenDataStore(modelContainer: modelContainer)
         Self.restoreCodexProfiles(into: modelContainer.mainContext)
