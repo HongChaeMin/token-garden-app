@@ -39,42 +39,48 @@ actor OverviewRepository {
         var weekRaw: [String: (claude: Int, codex: Int)] = [:]
         var monthRaw: [String: (claude: Int, codex: Int)] = [:]
 
-        for daily in dailies {
-            heatmap.append(HeatmapDay(date: daily.date, claudeTokens: daily.claudeTokens, codexTokens: daily.codexTokens))
+        if !Task.isCancelled {
+            for daily in dailies {
+                if Task.isCancelled { break }
 
-            if daily.date == today {
-                claudeToday = daily.claudeTokens
-                codexToday = daily.codexTokens
-            }
-            if daily.date >= weekStart {
-                claudeWeek += daily.claudeTokens
-                codexWeek += daily.codexTokens
-            }
-            if daily.date >= monthStart {
-                claudeMonth += daily.claudeTokens
-                codexMonth += daily.codexTokens
-            }
-
-            // Relationship faulting happens on the background executor — safe.
-            for project in daily.projectBreakdowns {
-                let isCodex = (project.profileName ?? "").hasPrefix("Codex/")
-                let delta = project.tokens
-                let key = project.projectName
+                heatmap.append(HeatmapDay(date: daily.date, claudeTokens: daily.claudeTokens, codexTokens: daily.codexTokens))
 
                 if daily.date == today {
-                    var cur = todayRaw[key] ?? (0, 0)
-                    if isCodex { cur.codex += delta } else { cur.claude += delta }
-                    todayRaw[key] = cur
+                    claudeToday = daily.claudeTokens
+                    codexToday = daily.codexTokens
                 }
                 if daily.date >= weekStart {
-                    var cur = weekRaw[key] ?? (0, 0)
-                    if isCodex { cur.codex += delta } else { cur.claude += delta }
-                    weekRaw[key] = cur
+                    claudeWeek += daily.claudeTokens
+                    codexWeek += daily.codexTokens
                 }
                 if daily.date >= monthStart {
-                    var cur = monthRaw[key] ?? (0, 0)
-                    if isCodex { cur.codex += delta } else { cur.claude += delta }
-                    monthRaw[key] = cur
+                    claudeMonth += daily.claudeTokens
+                    codexMonth += daily.codexTokens
+                }
+
+                // Relationship faulting happens on the background executor — safe.
+                for project in daily.projectBreakdowns {
+                    if Task.isCancelled { break }
+
+                    let isCodex = (project.profileName ?? "").hasPrefix("Codex/")
+                    let delta = project.tokens
+                    let key = project.projectName
+
+                    if daily.date == today {
+                        var cur = todayRaw[key] ?? (0, 0)
+                        if isCodex { cur.codex += delta } else { cur.claude += delta }
+                        todayRaw[key] = cur
+                    }
+                    if daily.date >= weekStart {
+                        var cur = weekRaw[key] ?? (0, 0)
+                        if isCodex { cur.codex += delta } else { cur.claude += delta }
+                        weekRaw[key] = cur
+                    }
+                    if daily.date >= monthStart {
+                        var cur = monthRaw[key] ?? (0, 0)
+                        if isCodex { cur.codex += delta } else { cur.claude += delta }
+                        monthRaw[key] = cur
+                    }
                 }
             }
         }
