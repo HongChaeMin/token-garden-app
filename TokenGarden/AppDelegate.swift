@@ -15,6 +15,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var animationTimer: Timer!
     private var updateChecker: UpdateChecker!
     private var profileManager: ProfileManager!
+    private var overviewViewModel: OverviewViewModel!
     private var activeProfileObserver: NSObjectProtocol?
 
     // Session refresh: background thread writes, main thread reads
@@ -120,6 +121,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateChecker = UpdateChecker()
         updateChecker.check()
 
+        // Overview ViewModel — loads snapshot in background before the popover opens.
+        overviewViewModel = OverviewViewModel(modelContainer: modelContainer)
+        overviewViewModel.start()
+
         // Popover
         popover = NSPopover()
         popover.behavior = .transient
@@ -128,6 +133,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(menuBarController)
             .environmentObject(updateChecker)
             .environmentObject(profileManager)
+            .environment(overviewViewModel)
             .modelContainer(modelContainer)
         let hostingController = NSHostingController(rootView: popoverView)
         hostingController.sizingOptions = .preferredContentSize
@@ -139,6 +145,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let event = parser.parse(logLine: line) else { return }
             self?.dataStore.record(event)
             self?.menuBarController.onTokenEvent(event)
+            self?.overviewViewModel.onTokenEvent()
 
             // Auto-balance only when session changes
             if let sessionId = event.sessionId,
@@ -166,6 +173,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ).first?.totalTokens ?? 0
             let hourlyBuckets = self?.dataStore.fetchHourlyBuckets() ?? [0, 0, 0]
             self?.menuBarController.reloadData(todayTokens: todayTokens, hourlyBuckets: hourlyBuckets)
+            self?.overviewViewModel.refresh()
         }
 
 
@@ -175,6 +183,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         codexWatcher = CodexWatcher { [weak self] event in
             self?.dataStore.recordCodex(event)
             self?.menuBarController.onTokenUsage(at: event.updatedAt, tokens: event.tokensUsed)
+            self?.overviewViewModel.onTokenEvent()
         }
         // Migrate legacy Codex placeholder profileName records to "Codex/<email>"
         if let email = CodexWatcher.currentAccount()?.email {

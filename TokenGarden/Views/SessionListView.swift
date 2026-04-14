@@ -1,5 +1,4 @@
 import SwiftUI
-import SwiftData
 
 enum SessionSource {
     case claude
@@ -8,18 +7,9 @@ enum SessionSource {
 
 struct SessionListView: View {
     let source: SessionSource
-    @Query(sort: \SessionUsage.lastTime, order: .reverse) private var allSessions: [SessionUsage]
+    let sessions: [SessionSummary]
 
     @State private var isExpanded = false
-
-    private var activeSessions: [SessionUsage] {
-        switch source {
-        case .claude:
-            return allSessions.filter { $0.source == "claude" && $0.isActive }
-        case .codex:
-            return allSessions.filter { $0.source == "codex" && $0.isActive }
-        }
-    }
 
     private var title: String {
         switch source {
@@ -35,7 +25,7 @@ struct SessionListView: View {
                     Label(title, systemImage: "bolt.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text("\(activeSessions.count)")
+                    Text("\(sessions.count)")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Spacer()
@@ -49,18 +39,18 @@ struct SessionListView: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                if activeSessions.isEmpty {
+                if sessions.isEmpty {
                     Text(source == .claude ? "No active sessions" : "No active threads")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                         .padding(.vertical, 4)
                 } else {
                     let content = VStack(spacing: 4) {
-                        ForEach(activeSessions, id: \.sessionId) { session in
+                        ForEach(sessions) { session in
                             SessionRow(session: session)
                         }
                     }
-                    if activeSessions.count > 10 {
+                    if sessions.count > 10 {
                         ScrollView { content }
                             .scrollIndicators(.never)
                             .frame(maxHeight: 250)
@@ -76,7 +66,7 @@ struct SessionListView: View {
 }
 
 private struct SessionRow: View {
-    let session: SessionUsage
+    let session: SessionSummary
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
