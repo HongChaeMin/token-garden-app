@@ -188,8 +188,8 @@ struct CredentialsManager {
     }
 
     /// Fetches real-time rate limit utilization via a minimal API call.
-    /// Parses `anthropic-ratelimit-unified-*` response headers.
-    /// Automatically refreshes expired OAuth tokens and retries once.
+    /// Parses `anthropic-ratelimit-unified-*` response headers. Returns nil on
+    /// any failure — callers do not currently retry on expired tokens.
     nonisolated static func fetchUsageLimits(oauthToken: String) async -> UsageLimits? {
         await _fetchUsageLimits(token: oauthToken)
     }
