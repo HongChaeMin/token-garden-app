@@ -261,7 +261,10 @@ class ProfileManager: ObservableObject {
         let isActive = profile.name == activeProfile?.name
 
         let credsMgr = credentialsManager
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        // Task.detached replaces DispatchQueue.global — the underlying fetch
+        // now suspends via async/await instead of blocking a GCD worker on a
+        // DispatchSemaphore, and the task honours cooperative cancellation.
+        Task.detached(priority: .utility) { [weak self] in
             let token: String?
             if isActive {
                 // Active: prefer current keychain token (Claude Code keeps it fresh)
@@ -272,17 +275,17 @@ class ProfileManager: ObservableObject {
             }
 
             guard let token else { return }
-            let limits = CredentialsManager.fetchUsageLimits(oauthToken: token)
+            let limits = await CredentialsManager.fetchUsageLimits(oauthToken: token)
 
-            // If active profile succeeded, update stored credentials from keychain
+            // If the active profile succeeded, refresh stored credentials from keychain
             if isActive, limits != nil, let freshCreds = credsMgr.readCredentials() {
-                DispatchQueue.main.async {
+                await MainActor.run {
                     self?.updateStoredCredentials(name: profileName, credentials: freshCreds)
                 }
             }
 
-            DispatchQueue.main.async {
-                if let limits {
+            if let limits {
+                await MainActor.run {
                     self?.usageLimitsCache[profileName] = limits
                 }
             }

@@ -14,6 +14,18 @@ class MenuBarController: ObservableObject {
     private var bucketHours: [Int] = [-1, -1, -1]
     private var lastKnownDay: Date = .distantPast
 
+    /// Timestamp of the most recent token activity. Used to gate the
+    /// animation: frames only advance while there's been activity in the
+    /// last `idleThreshold` seconds. Prevents ~120 wasted NSImage renders
+    /// per minute on an idle machine.
+    private var lastActivityAt: Date = .distantPast
+    static let idleThreshold: TimeInterval = 60
+
+    /// Exposed for tests — whether the animation should currently advance.
+    var isAnimating: Bool {
+        Date().timeIntervalSince(lastActivityAt) < Self.idleThreshold
+    }
+
     init(
         statusItem: NSStatusItem,
         initialTodayTokens: Int = 0,
@@ -40,6 +52,7 @@ class MenuBarController: ObservableObject {
         let cal = Calendar.current
         guard cal.isDateInToday(timestamp) else { return }
         todayTokens += tokens
+        lastActivityAt = Date()
         refreshBucketHours()
         let hour = cal.component(.hour, from: timestamp)
         if let idx = bucketHours.firstIndex(of: hour) {
@@ -57,11 +70,22 @@ class MenuBarController: ObservableObject {
         updateDisplay()
     }
 
-    /// Called by AppDelegate's timer on every tick
+    /// Called by AppDelegate's timer on every tick. While idle (no token
+    /// activity in the last `idleThreshold` seconds) the frame is frozen —
+    /// we still refresh the hour buckets so the mini graph stays correct
+    /// around hour boundaries, but we skip the NSImage regeneration.
     func tick() {
-        currentFrame = (currentFrame + 1) % AnimationFrames.frameCount
+        let wasAnimating = isAnimating
+        if wasAnimating {
+            currentFrame = (currentFrame + 1) % AnimationFrames.frameCount
+        }
+        let previousBuckets = hourlyBuckets
+        let previousHours = bucketHours
         refreshBucketHours()
-        updateDisplay()
+        let bucketsChanged = previousBuckets != hourlyBuckets || previousHours != bucketHours
+        if wasAnimating || bucketsChanged {
+            updateDisplay()
+        }
     }
 
     // MARK: - Private
