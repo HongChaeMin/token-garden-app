@@ -54,8 +54,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try? FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             UserDefaults.standard.removeObject(forKey: "LogWatcherOffsets")
             CodexWatcher.clearSnapshots()
-            modelContainer = try! ModelContainer(for: schema, configurations: [config])
 
+            do {
+                modelContainer = try ModelContainer(for: schema, configurations: [config])
+            } catch {
+                let alert = NSAlert()
+                alert.alertStyle = .critical
+                alert.messageText = "TokenGarden couldn’t rebuild its data store."
+                alert.informativeText = "The existing store was archived for manual recovery, but creating a new store still failed.\n\nError: \(error.localizedDescription)"
+                alert.runModal()
+                NSApp.terminate(nil)
+                return
+            }
             // Only restore when the backup is trustworthy — skip on missing file,
             // schema mismatch, or open failure, where the archived `.corrupted-*`
             // files are the authoritative source for manual recovery.
