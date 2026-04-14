@@ -14,10 +14,7 @@ class MenuBarController: ObservableObject {
     private var bucketHours: [Int] = [-1, -1, -1]
     private var lastKnownDay: Date = .distantPast
 
-    /// Timestamp of the most recent token activity. Used to gate the
-    /// animation: frames only advance while there's been activity in the
-    /// last `idleThreshold` seconds. Prevents ~120 wasted NSImage renders
-    /// per minute on an idle machine.
+    /// Animation freezes while `Date() - lastActivityAt >= idleThreshold`.
     private var lastActivityAt: Date = .distantPast
     static let idleThreshold: TimeInterval = 60
 
@@ -70,10 +67,9 @@ class MenuBarController: ObservableObject {
         updateDisplay()
     }
 
-    /// Called by AppDelegate's timer on every tick. While idle (no token
-    /// activity in the last `idleThreshold` seconds) the frame is frozen —
-    /// we still refresh the hour buckets so the mini graph stays correct
-    /// around hour boundaries, but we skip the NSImage regeneration.
+    /// Called by AppDelegate's 0.5s timer. Skips the NSImage regeneration
+    /// while idle, but still refreshes hour buckets so the mini graph
+    /// stays correct across hour boundaries.
     func tick() {
         let wasAnimating = isAnimating
         if wasAnimating {

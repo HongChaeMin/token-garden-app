@@ -195,10 +195,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Session Refresh (background → main via polling)
 
-    /// Runs the session scan on a cancellable background Task instead of a
-    /// detached Thread that was leaked (the old `while true { Thread.sleep }`
-    /// loop had no way to stop on app termination). Cancellation propagates
-    /// through `Task.sleep`, so `applicationWillTerminate` winds it down.
+    /// Cancelled from `applicationWillTerminate` — see `sessionRefreshTask`.
     private func startSessionRefreshLoop() {
         sessionRefreshTask = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
@@ -217,9 +214,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Lock-guarded write to the pending-projects slot. Pulled out into its
-    /// own nonisolated method because `NSLock.lock()` is unavailable from
-    /// async contexts.
+    /// Non-async wrapper — `NSLock.lock()` is unavailable from async contexts.
     private nonisolated func storePendingProjects(claude: Set<String>, codex: Set<String>) {
         refreshLock.lock()
         defer { refreshLock.unlock() }
