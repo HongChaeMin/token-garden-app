@@ -188,18 +188,18 @@ struct CredentialsManager {
     }
 
     /// Fetches real-time rate limit utilization via a minimal API call.
-    /// Parses `anthropic-ratelimit-unified-*` response headers.
-    /// Automatically refreshes expired OAuth tokens and retries once.
-    nonisolated static func fetchUsageLimits(oauthToken: String) -> UsageLimits? {
-        _fetchUsageLimits(token: oauthToken)
+    /// Parses `anthropic-ratelimit-unified-*` response headers. Returns nil on
+    /// any failure — callers do not currently retry on expired tokens.
+    nonisolated static func fetchUsageLimits(oauthToken: String) async -> UsageLimits? {
+        await _fetchUsageLimits(token: oauthToken)
     }
 
     /// Single-attempt fetch (no auto-refresh). Used by ProfileManager for manual swap-refresh flow.
-    nonisolated static func _fetchUsageLimitsOnce(token: String) -> UsageLimits? {
-        _fetchUsageLimits(token: token)
+    nonisolated static func _fetchUsageLimitsOnce(token: String) async -> UsageLimits? {
+        await _fetchUsageLimits(token: token)
     }
 
-    private nonisolated static func _fetchUsageLimits(token: String) -> UsageLimits? {
+    private nonisolated static func _fetchUsageLimits(token: String) async -> UsageLimits? {
         guard let url = URL(string: "https://api.anthropic.com/v1/messages") else { return nil }
 
         var request = URLRequest(url: url, timeoutInterval: 10)
@@ -215,39 +215,35 @@ struct CredentialsManager {
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        let semaphore = DispatchSemaphore(value: 0)
-        nonisolated(unsafe) var result: UsageLimits?
+        // URLSession's async API replaces the old semaphore wait — the caller's
+        // Task can now be cancelled cleanly, and nothing blocks a GCD worker.
+        guard let (_, response) = try? await URLSession.shared.data(for: request) else {
+            return nil
+        }
+        guard let http = response as? HTTPURLResponse, http.statusCode != 401 else {
+            return nil
+        }
 
-        URLSession.shared.dataTask(with: request) { _, response, _ in
-            defer { semaphore.signal() }
-            guard let http = response as? HTTPURLResponse,
-                  http.statusCode != 401 else { return }
+        let h = http.allHeaderFields as? [String: String] ?? [:]
+        func doubleHeader(_ key: String) -> Double? {
+            h.first(where: { $0.key.lowercased() == key })
+                .flatMap { Double($0.value) }
+        }
+        func dateHeader(_ key: String) -> Date? {
+            doubleHeader(key).map { Date(timeIntervalSince1970: $0) }
+        }
 
-            let h = http.allHeaderFields as? [String: String] ?? [:]
+        guard let fiveUtil = doubleHeader("anthropic-ratelimit-unified-5h-utilization"),
+              let fiveReset = dateHeader("anthropic-ratelimit-unified-5h-reset"),
+              let sevenUtil = doubleHeader("anthropic-ratelimit-unified-7d-utilization"),
+              let sevenReset = dateHeader("anthropic-ratelimit-unified-7d-reset")
+        else { return nil }
 
-            func doubleHeader(_ key: String) -> Double? {
-                h.first(where: { $0.key.lowercased() == key })
-                    .flatMap { Double($0.value) }
-            }
-            func dateHeader(_ key: String) -> Date? {
-                doubleHeader(key).map { Date(timeIntervalSince1970: $0) }
-            }
-
-            guard let fiveUtil = doubleHeader("anthropic-ratelimit-unified-5h-utilization"),
-                  let fiveReset = dateHeader("anthropic-ratelimit-unified-5h-reset"),
-                  let sevenUtil = doubleHeader("anthropic-ratelimit-unified-7d-utilization"),
-                  let sevenReset = dateHeader("anthropic-ratelimit-unified-7d-reset")
-            else { return }
-
-            result = UsageLimits(
-                fiveHourUtilization: fiveUtil,
-                fiveHourResetAt: fiveReset,
-                sevenDayUtilization: sevenUtil,
-                sevenDayResetAt: sevenReset
-            )
-        }.resume()
-
-        semaphore.wait()
-        return result
+        return UsageLimits(
+            fiveHourUtilization: fiveUtil,
+            fiveHourResetAt: fiveReset,
+            sevenDayUtilization: sevenUtil,
+            sevenDayResetAt: sevenReset
+        )
     }
 }

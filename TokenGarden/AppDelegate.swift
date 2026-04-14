@@ -18,10 +18,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var overviewViewModel: OverviewViewModel!
     private var activeProfileObserver: NSObjectProtocol?
 
-    // Session refresh: background thread writes, main thread reads
+    // Session refresh: background task writes, main thread reads
     private let refreshLock = NSLock()
     private nonisolated(unsafe) var pendingClaudeProjects: Set<String>?
     private nonisolated(unsafe) var pendingCodexProjects: Set<String>?
+    private var sessionRefreshTask: Task<Void, Never>?
     private var lastBalancedSessionId: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -198,6 +199,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        sessionRefreshTask?.cancel()
         if let activeProfileObserver {
             NotificationCenter.default.removeObserver(activeProfileObserver)
         }
@@ -217,20 +219,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Session Refresh (background → main via polling)
 
+    /// Cancelled from `applicationWillTerminate` — see `sessionRefreshTask`.
     private func startSessionRefreshLoop() {
-        Thread.detachNewThread { [weak self] in
-
-            while true {
+        sessionRefreshTask = Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
                 let claudeProjects = TokenDataStore.getActiveClaudeProjects()
                 let codexProjects = TokenDataStore.getActiveCodexProjects()
 
-                self?.refreshLock.lock()
-                self?.pendingClaudeProjects = claudeProjects
-                self?.pendingCodexProjects = codexProjects
-                self?.refreshLock.unlock()
-                Thread.sleep(forTimeInterval: 30)
+                self?.storePendingProjects(claude: claudeProjects, codex: codexProjects)
+
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch {
+                    // Cancellation — exit loop.
+                    break
+                }
             }
         }
+    }
+
+    /// Non-async wrapper — `NSLock.lock()` is unavailable from async contexts.
+    private nonisolated func storePendingProjects(claude: Set<String>, codex: Set<String>) {
+        refreshLock.lock()
+        defer { refreshLock.unlock() }
+        pendingClaudeProjects = claude
+        pendingCodexProjects = codex
     }
 
     private func applyPendingRefreshIfNeeded() {
