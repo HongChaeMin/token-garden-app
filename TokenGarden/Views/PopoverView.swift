@@ -3,7 +3,8 @@ import SwiftData
 
 struct PopoverView: View {
     @EnvironmentObject var menuBarController: MenuBarController
-    @Query(sort: \DailyUsage.date) private var allUsages: [DailyUsage]
+    @Environment(OverviewViewModel.self) private var vm
+
     enum Tab { case overview, accounts }
     enum OverviewSource: String, CaseIterable {
         case claude = "Claude"
@@ -14,139 +15,80 @@ struct PopoverView: View {
     @State private var showSettings = false
     @State private var showProfiles = false
     @State private var showCodexProfiles = false
-    @State private var selectedDate: Date?
 
-    private var todayUsage: DailyUsage? {
-        let today = Calendar.current.startOfDay(for: Date())
-        return allUsages.first { $0.date == today }
-    }
+    // MARK: - Snapshot-derived values (no @Query, no main-thread fetch)
 
-    private var weekUsages: [DailyUsage] {
-        var calendar = Calendar.current
-        calendar.firstWeekday = 2
-        let weekStart = calendar.dateComponents([.calendar, .yearForWeekOfYear, .weekOfYear], from: Date()).date!
-        return allUsages.filter { $0.date >= weekStart }
-    }
-
-    private var monthUsages: [DailyUsage] {
-        let calendar = Calendar.current
-        let comps = calendar.dateComponents([.year, .month], from: Date())
-        let monthStart = calendar.date(from: comps)!
-        return allUsages.filter { $0.date >= monthStart }
-    }
-
-    private var weekTokens: Int { weekUsages.reduce(0) { $0 + $1.totalTokens } }
-    private var monthTokens: Int { monthUsages.reduce(0) { $0 + $1.totalTokens } }
-
-    private var todayCodexTokens: Int { todayUsage?.codexTokens ?? 0 }
-    private var weekCodexTokens: Int { weekUsages.reduce(0) { $0 + $1.codexTokens } }
-    private var monthCodexTokens: Int { monthUsages.reduce(0) { $0 + $1.codexTokens } }
-
-    private var todayClaudeTokens: Int { todayUsage?.claudeTokens ?? 0 }
-    private var weekClaudeTokens: Int { weekUsages.reduce(0) { $0 + $1.claudeTokens } }
-    private var monthClaudeTokens: Int { monthUsages.reduce(0) { $0 + $1.claudeTokens } }
-
-    private var heatmapData: [(date: Date, tokens: Int)] {
-        allUsages.map { usage in
-            (date: usage.date, tokens: sourceTokens(for: usage))
-        }
-    }
-
-    @Query private var allHourlyUsages: [HourlyUsage]
-
-    private var activeHourlyTokens: [Int] {
-        let cal = Calendar.current
-        let targetDay = cal.startOfDay(for: selectedDate ?? Date())
-
-        let source = overviewSource == .claude ? "claude" : "codex"
-        let dayEntries = allHourlyUsages.filter { $0.date == targetDay && $0.source == source }
-
-        var buckets = Array(repeating: 0, count: 24)
-        for entry in dayEntries {
-            guard entry.hour >= 0 && entry.hour < 24 else { continue }
-            buckets[entry.hour] += entry.tokens
-        }
-        return buckets
-    }
+    private var snapshot: OverviewSnapshot { vm.snapshot }
 
     private var overviewTodayTokens: Int {
-        overviewSource == .claude ? todayClaudeTokens : todayCodexTokens
+        overviewSource == .claude ? snapshot.claudeTodayTokens : snapshot.codexTodayTokens
     }
-
     private var overviewWeekTokens: Int {
-        overviewSource == .claude ? weekClaudeTokens : weekCodexTokens
+        overviewSource == .claude ? snapshot.claudeWeekTokens : snapshot.codexWeekTokens
     }
-
     private var overviewMonthTokens: Int {
-        overviewSource == .claude ? monthClaudeTokens : monthCodexTokens
+        overviewSource == .claude ? snapshot.claudeMonthTokens : snapshot.codexMonthTokens
     }
 
-    // MARK: - Project data by time range
-
-    private func projectsForUsages(_ usages: [DailyUsage]) -> [ProjectSourceBreakdown] {
-        var totals: [String: (claude: Int, codex: Int)] = [:]
-        for usage in usages {
-            for project in usage.projectBreakdowns {
-                let isCodex = (project.profileName ?? "").hasPrefix("Codex/")
-                if isCodex {
-                    totals[project.projectName, default: (0, 0)].codex += project.tokens
-                } else {
-                    totals[project.projectName, default: (0, 0)].claude += project.tokens
-                }
-            }
+    private var heatmapData: [(date: Date, tokens: Int)] {
+        snapshot.heatmap.map { day in
+            (date: day.date, tokens: overviewSource == .claude ? day.claudeTokens : day.codexTokens)
         }
-        return totals.map { item in
-            let total = overviewSource == .claude ? item.value.claude : item.value.codex
+    }
+
+    private var activeHourlyTokens: [Int] {
+        overviewSource == .claude ? vm.activeClaudeHourlyTokens : vm.activeCodexHourlyTokens
+    }
+
+    private var activeSessions: [SessionSummary] {
+        overviewSource == .claude ? snapshot.claudeActiveSessions : snapshot.codexActiveSessions
+    }
+
+    // MARK: - Source filtering for ProjectListView
+
+    private func filteredProjects(_ raw: [ProjectBreakdown]) -> [ProjectSourceBreakdown] {
+        raw.compactMap { row in
+            let sourceTokens = overviewSource == .claude ? row.claudeTokens : row.codexTokens
+            guard sourceTokens > 0 else { return nil }
             return ProjectSourceBreakdown(
-                name: item.key,
-                totalTokens: total,
-                claudeTokens: overviewSource == .claude ? item.value.claude : 0,
-                codexTokens: overviewSource == .codex ? item.value.codex : 0
+                name: row.name,
+                totalTokens: sourceTokens,
+                claudeTokens: overviewSource == .claude ? row.claudeTokens : 0,
+                codexTokens: overviewSource == .codex ? row.codexTokens : 0
             )
         }
-        .filter { $0.totalTokens > 0 }
     }
 
-    private var todayProjects: [ProjectSourceBreakdown] {
-        let today = Calendar.current.startOfDay(for: Date())
-        return projectsForUsages(allUsages.filter { $0.date == today })
-    }
-
-    private var weekProjects: [ProjectSourceBreakdown] {
-        var calendar = Calendar.current
-        calendar.firstWeekday = 2
-        let weekStart = calendar.dateComponents([.calendar, .yearForWeekOfYear, .weekOfYear], from: Date()).date!
-        return projectsForUsages(allUsages.filter { $0.date >= weekStart })
-    }
-
-    private var monthProjects: [ProjectSourceBreakdown] {
-        let calendar = Calendar.current
-        let comps = calendar.dateComponents([.year, .month], from: Date())
-        let monthStart = calendar.date(from: comps)!
-        return projectsForUsages(allUsages.filter { $0.date >= monthStart })
-    }
+    private var todayProjects: [ProjectSourceBreakdown] { filteredProjects(snapshot.todayProjects) }
+    private var weekProjects: [ProjectSourceBreakdown] { filteredProjects(snapshot.weekProjects) }
+    private var monthProjects: [ProjectSourceBreakdown] { filteredProjects(snapshot.monthProjects) }
 
     private var selectedDayProjects: [ProjectSourceBreakdown]? {
-        guard let date = selectedDate else { return nil }
-        let day = Calendar.current.startOfDay(for: date)
-        let usages = allUsages.filter { $0.date == day }
-        guard !usages.isEmpty else { return [] }
-        return projectsForUsages(usages)
+        guard vm.selectedDate != nil, let raw = vm.selectedDayProjects else { return nil }
+        return filteredProjects(raw)
     }
 
     private var selectedDayLabel: String? {
-        guard let date = selectedDate else { return nil }
+        guard let date = vm.selectedDate else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US")
         formatter.dateFormat = "M/d (E)"
         return formatter.string(from: date)
     }
 
+    private var selectedDayTokens: Int? {
+        guard let date = vm.selectedDate else { return nil }
+        let day = Calendar.current.startOfDay(for: date)
+        guard let row = snapshot.heatmap.first(where: {
+            Calendar.current.isDate($0.date, inSameDayAs: day)
+        }) else { return nil }
+        return overviewSource == .claude ? row.claudeTokens : row.codexTokens
+    }
+
     private var emptyStateReason: EmptyStateReason? {
         if activeTab == .overview && overviewSource == .codex {
             return nil
         }
-
         let logPath = UserDefaults.standard.string(forKey: "logPath") ?? "~/.claude/"
         let expandedPath = NSString(string: logPath).expandingTildeInPath
 
@@ -156,13 +98,16 @@ struct PopoverView: View {
         if !FileManager.default.isReadableFile(atPath: expandedPath) {
             return .noPermission
         }
-        if allUsages.isEmpty && overviewSource == .claude {
+        if !snapshot.hasAnyData && overviewSource == .claude {
             return .noData
         }
         return nil
     }
 
+    // MARK: - Body
+
     var body: some View {
+        @Bindable var vm = vm
         VStack(spacing: 0) {
             HStack {
                 if showSettings || showProfiles || showCodexProfiles {
@@ -208,8 +153,9 @@ struct PopoverView: View {
 
             Divider()
 
-
-            if let reason = emptyStateReason {
+            if vm.isInitialLoading && activeTab == .overview && !showSettings && !showProfiles && !showCodexProfiles {
+                OverviewSkeleton()
+            } else if let reason = emptyStateReason {
                 EmptyStateView(reason: reason)
                     .frame(minHeight: 200)
             } else if showSettings {
@@ -247,21 +193,17 @@ struct PopoverView: View {
                     .padding(.horizontal, 12)
                     .padding(.top, 8)
 
-                    HeatmapView(dailyUsages: heatmapData, selectedDate: $selectedDate)
+                    HeatmapView(dailyUsages: heatmapData, selectedDate: $vm.selectedDate)
                         .padding(.horizontal, 12)
 
-                    if let date = selectedDate,
-                       let usage = allUsages.first(where: {
-                           Calendar.current.isDate($0.date, inSameDayAs: date)
-                       }) {
-                        let selectedTokens = sourceTokens(for: usage)
+                    if let tokens = selectedDayTokens {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(selectedDayLabel ?? "")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Spacer()
-                                Text(TokenFormatter.format(selectedTokens))
+                                Text(TokenFormatter.format(tokens))
                                     .font(.caption.monospacedDigit())
                                     .fontWeight(.medium)
                             }
@@ -269,7 +211,7 @@ struct PopoverView: View {
                                 sourceSummaryLabel(
                                     title: overviewSource.rawValue,
                                     color: overviewSource == .claude ? .purple : .green,
-                                    tokens: selectedTokens
+                                    tokens: tokens
                                 )
                                 Spacer()
                             }
@@ -289,7 +231,7 @@ struct PopoverView: View {
                     HourlyChartView(
                         hourlyTokens: activeHourlyTokens,
                         title: "\(overviewSource.rawValue) Hourly",
-                        isToday: selectedDate == nil || Calendar.current.isDateInToday(selectedDate!)
+                        isToday: vm.selectedDate == nil || Calendar.current.isDateInToday(vm.selectedDate!)
                     )
                         .padding(.horizontal, 12)
 
@@ -302,7 +244,10 @@ struct PopoverView: View {
                     )
                     .padding(.horizontal, 12)
 
-                    SessionListView(source: overviewSource == .claude ? .claude : .codex)
+                    SessionListView(
+                        source: overviewSource == .claude ? .claude : .codex,
+                        sessions: activeSessions
+                    )
                         .padding(.horizontal, 12)
                 }
                 .padding(.bottom, 12)
@@ -326,9 +271,4 @@ struct PopoverView: View {
                 .foregroundStyle(tokens > 0 ? .tertiary : .quaternary)
         }
     }
-
-    private func sourceTokens(for usage: DailyUsage) -> Int {
-        overviewSource == .claude ? usage.claudeTokens : usage.codexTokens
-    }
-
 }
