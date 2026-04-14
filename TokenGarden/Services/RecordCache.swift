@@ -1,18 +1,11 @@
 import Foundation
 import SwiftData
 
-/// In-memory cache of the SwiftData entities touched by `TokenDataStore.record(_:)`
-/// and `recordCodex(_:)`. Each incoming event used to run 3–4 `fetch` calls just
-/// to locate "the DailyUsage for today / the ProfileTokenUsage for this profile /
-/// the SessionUsage for this sessionId". During log backfill that ran hundreds
-/// of times in a tight loop and was the biggest cause of main-thread hangs.
-///
-/// The cache keeps live `@Model` references so mutations still flow back to the
-/// ModelContext — we're skipping the lookup, not the write.
+/// In-memory lookup cache for `TokenDataStore.record(_:)` / `recordCodex(_:)`.
 ///
 /// Day-keyed entries (`daily`, `hourly`, `profileTokens`) invalidate on day
-/// rollover. Session entries live as long as the app process because sessionIds
-/// are stable.
+/// rollover. Session entries persist — sessionIds are stable across the day.
+/// Holds live `@Model` references: we skip the lookup, not the write.
 @MainActor
 final class RecordCache {
     private(set) var day: Date = .distantPast

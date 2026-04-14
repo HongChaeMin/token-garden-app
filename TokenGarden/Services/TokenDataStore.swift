@@ -238,17 +238,9 @@ class TokenDataStore: ObservableObject {
         }
     }
 
-    /// Apply active status with pre-fetched project names. Must be called on MainActor.
-    ///
-    /// Rewritten from O(n²) — the previous implementation, for each session
-    /// in an active project, filtered and sorted the full session list to
-    /// find that project's newest session. Now runs in a single linear pass
-    /// over sessions matching `source`:
-    ///   1. Track the newest `SessionUsage` per project in one dictionary.
-    ///   2. Each session is active iff its project is in `activeProjects`
-    ///      AND it is the newest session in that project.
-    /// Same result, O(n) instead of O(n²), plus a predicate so the DB hands
-    /// us only the rows for the matching source.
+    /// For each project in `activeProjects`, only its newest session (by
+    /// `lastTime`) is marked active. All others for `source` go inactive.
+    /// Runs in O(n) via one dictionary pass.
     func applyActiveStatus(source: String, activeProjects: Set<String>) {
         let descriptor = FetchDescriptor<SessionUsage>(
             predicate: #Predicate<SessionUsage> { $0.source == source }
