@@ -17,9 +17,12 @@ struct AppDelegateProfileBackupTests {
 
     private func run(_ db: OpaquePointer?, _ sql: String) {
         var stmt: OpaquePointer?
-        sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
-        _ = sqlite3_step(stmt)
-        sqlite3_finalize(stmt)
+        let prepareResult = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        #expect(prepareResult == SQLITE_OK)
+        defer { sqlite3_finalize(stmt) }
+
+        let stepResult = sqlite3_step(stmt)
+        #expect(stepResult == SQLITE_DONE || stepResult == SQLITE_ROW)
     }
 
     /// Opens a SQLite DB, enables WAL, creates ZPROFILE, inserts a row — and returns the open
