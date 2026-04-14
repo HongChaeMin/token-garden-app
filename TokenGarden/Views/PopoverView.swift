@@ -153,11 +153,11 @@ struct PopoverView: View {
 
             Divider()
 
-            if vm.isInitialLoading && activeTab == .overview && !showSettings && !showProfiles && !showCodexProfiles {
-                OverviewSkeleton()
-            } else if let reason = emptyStateReason {
+            if let reason = emptyStateReason {
                 EmptyStateView(reason: reason)
                     .frame(minHeight: 200)
+            } else if vm.isInitialLoading && activeTab == .overview && !showSettings && !showProfiles && !showCodexProfiles {
+                OverviewSkeleton()
             } else if showSettings {
                 SettingsView()
                     .transition(.identity)
