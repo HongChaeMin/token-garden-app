@@ -260,7 +260,16 @@ class ProfileManager: ObservableObject {
             }
         }
 
-        if let target = leastUsed, target.name != activeProfile?.name {
+        // Only switch if the target is genuinely less loaded than the current active profile.
+        // If active profile has no cache (e.g. API failed), don't switch blindly —
+        // the candidate might itself be heavily loaded.
+        let activeScore = activeProfile.flatMap { usageLimitsCache[$0.name] }
+            .map { max($0.fiveHourUtilization, $0.sevenDayUtilization) }
+
+        if let target = leastUsed,
+           target.name != activeProfile?.name,
+           let currentScore = activeScore,
+           leastScore < currentScore {
             switchTo(profileName: target.name)
         }
 
