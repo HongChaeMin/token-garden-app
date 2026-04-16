@@ -20,7 +20,7 @@ class ProfileManager: ObservableObject {
     private let cacheTTL: TimeInterval = 300  // 5 minutes
     private let modelDowngradeThreshold: Double = 0.80
     private var lastManualSwitchAt: Date = .distantPast
-    private let manualSwitchLockout: TimeInterval = 60  // ignore keychain sync for 60s after manual switch
+    private let manualSwitchLockout: TimeInterval = 300  // ignore auto-overrides for 5min after manual switch
 
     init(modelContext: ModelContext, credentialsManager: CredentialsManager = CredentialsManager()) {
         self.modelContext = modelContext
@@ -224,6 +224,8 @@ class ProfileManager: ObservableObject {
     // MARK: - Auto Balancing
 
     func balanceIfNeeded() {
+        // Don't auto-balance right after a manual switch — user chose this profile intentionally.
+        guard Date().timeIntervalSince(lastManualSwitchAt) > manualSwitchLockout else { return }
         let allDescriptor = FetchDescriptor<Profile>()
         guard let profiles = try? modelContext.fetch(allDescriptor),
               profiles.count >= 2 else {
