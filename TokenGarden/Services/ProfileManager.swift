@@ -4,6 +4,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let activeProfileNameDidChange = Notification.Name("activeProfileNameDidChange")
+    static let profileRegistryDidChange = Notification.Name("profileRegistryDidChange")
 }
 
 @MainActor
@@ -66,6 +67,7 @@ class ProfileManager: ObservableObject {
 
         try? modelContext.save()
         activeProfile = profile
+        NotificationCenter.default.post(name: .profileRegistryDidChange, object: self)
         return true
     }
 
@@ -79,6 +81,7 @@ class ProfileManager: ObservableObject {
         modelContext.delete(profile)
         try? modelContext.save()
         if wasActive { activeProfile = nil }
+        NotificationCenter.default.post(name: .profileRegistryDidChange, object: self)
         return true
     }
 
@@ -181,7 +184,9 @@ class ProfileManager: ObservableObject {
             switchError = "Failed to write credentials to keychain."
         }
 
-        usageLimitsCache.removeValue(forKey: target.name)
+        // Clear all caches: the keychain now holds the new profile's token,
+        // so any cached limit fetched with the previous token is stale.
+        usageLimitsCache.removeAll()
 
         // Notify dataStore to update activeProfileName
         NotificationCenter.default.post(
@@ -279,11 +284,48 @@ class ProfileManager: ObservableObject {
     }
 
     func prefetchAllUsageLimits() {
-        let descriptor = FetchDescriptor<Profile>()
-        guard let profiles = try? modelContext.fetch(descriptor) else { return }
-        for profile in profiles {
-            refreshUsageLimits(for: profile)
+        // Sync active profile first, then fetch — serial execution prevents the race
+        // where refreshUsageLimits starts before applyActiveProfileByEmail completes.
+        Task.detached(priority: .userInitiated) { [weak self] in
+            if let authInfo = CredentialsManager.fetchAuthStatus() {
+                await MainActor.run { self?.applyActiveProfileByEmail(authInfo.email) }
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                let profiles = (try? self.modelContext.fetch(FetchDescriptor<Profile>())) ?? []
+                for profile in profiles {
+                    self.refreshUsageLimits(for: profile)
+                }
+            }
         }
+    }
+
+    /// Detects the actual logged-in account from keychain and updates isActive flags.
+    /// Fixes desync when the user switches accounts outside the app (e.g. via claude auth login).
+    func syncActiveProfileWithKeychain() {
+        Task.detached(priority: .userInitiated) { [weak self] in
+            guard let authInfo = CredentialsManager.fetchAuthStatus() else { return }
+            await MainActor.run { [weak self] in
+                self?.applyActiveProfileByEmail(authInfo.email)
+            }
+        }
+    }
+
+    private func applyActiveProfileByEmail(_ email: String) {
+        let all = allProfiles()
+        guard let match = all.first(where: { $0.email == email }) else { return }
+        guard match.email != activeProfile?.email else { return }
+
+        all.forEach { $0.isActive = ($0.email == email) }
+        try? modelContext.save()
+        activeProfile = match
+        usageLimitsCache.removeAll()
+
+        NotificationCenter.default.post(
+            name: .activeProfileNameDidChange,
+            object: self,
+            userInfo: ["profileName": match.name]
+        )
     }
 
     func refreshUsageLimits(for profile: Profile) {
@@ -303,9 +345,16 @@ class ProfileManager: ObservableObject {
         Task.detached(priority: .utility) { [weak self] in
             let token: String?
             if isActive {
-                // Active: prefer current keychain token (Claude Code keeps it fresh)
-                token = CredentialsManager.currentOAuthToken()
-                    ?? CredentialsManager.oauthToken(from: creds)
+                // Active profile: keychain is the source of truth.
+                // If the token is missing, attempt a CLI refresh before falling back
+                // to the stored credentialsJSON (which may also be stale).
+                if let t = CredentialsManager.currentOAuthToken() {
+                    token = t
+                } else if let t = CredentialsManager.refreshOAuthToken() {
+                    token = t
+                } else {
+                    token = CredentialsManager.oauthToken(from: creds)
+                }
             } else {
                 token = CredentialsManager.oauthToken(from: creds)
             }
@@ -382,6 +431,7 @@ class ProfileManager: ObservableObject {
 
         let credentialPairs = profiles.map { ($0.name, $0.credentialsJSON) }
         let activeCredentials = activeProfile?.credentialsJSON
+        let activeProfileName = activeProfile?.name
         let credsMgr = credentialsManager
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -390,11 +440,13 @@ class ProfileManager: ObservableObject {
             for (name, credentials) in credentialPairs {
                 guard credsMgr.writeCredentials(credentials) else { continue }
 
+                let pipe = Pipe()
                 let process = Process()
                 process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
                 process.arguments = ["claude", "--print-access-token"]
-                process.standardOutput = FileHandle.nullDevice
+                process.standardOutput = pipe
                 process.standardError = FileHandle.nullDevice
+                process.environment = ProcessInfo.processInfo.environment
 
                 do {
                     try process.run()
@@ -403,21 +455,43 @@ class ProfileManager: ObservableObject {
                     continue
                 }
 
-                // Read refreshed credentials immediately after this profile's refresh
+                // Capture the fresh access token from stdout and apply it directly
+                // to this profile's credentialsJSON. This is more reliable than
+                // reading back from the keychain, which may reflect a different
+                // profile's token if Claude Code changed it during the refresh.
+                let tokenData = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let freshToken = String(data: tokenData, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !freshToken.isEmpty,
+                   var json = try? JSONSerialization.jsonObject(with: credentials) as? [String: Any],
+                   var oauth = json["claudeAiOauth"] as? [String: Any] {
+                    oauth["accessToken"] = freshToken
+                    json["claudeAiOauth"] = oauth
+                    if let updated = try? JSONSerialization.data(withJSONObject: json) {
+                        refreshed.append((name: name, credentials: updated))
+                        continue
+                    }
+                }
+                // Fallback: read back from keychain if stdout was empty or unparseable
                 if let updated = credsMgr.readCredentials() {
                     refreshed.append((name: name, credentials: updated))
                 }
             }
 
-            // Restore active profile's credentials
-            if let activeCreds = activeCredentials {
-                _ = credsMgr.writeCredentials(activeCreds)
-            }
-
-            // Save each profile's refreshed credentials individually
+            // Restore active profile credentials and save all refreshed profiles on main actor.
+            // Reading activeProfile here (not the captured activeProfileName) ensures we
+            // restore the profile that is active *now*, even if the user switched mid-loop.
             DispatchQueue.main.async {
                 guard let self else { return }
                 MainActor.assumeIsolated {
+                    // P3: use current active profile at restore time, not loop-start snapshot
+                    let currentActiveName = self.activeProfile?.name
+                    let restoreCreds = refreshed.first(where: { $0.name == currentActiveName })?.credentials
+                        ?? self.activeProfile?.credentialsJSON
+                    if let creds = restoreCreds {
+                        _ = credsMgr.writeCredentials(creds)
+                    }
+
                     for (name, credentials) in refreshed {
                         let desc = FetchDescriptor<Profile>(predicate: #Predicate { $0.name == name })
                         if let profile = try? self.modelContext.fetch(desc).first {

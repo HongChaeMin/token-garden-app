@@ -22,6 +22,11 @@ class TokenDataStore: ObservableObject {
         cachedEmailAt = .distantPast
     }
 
+    func invalidateEmailCache() {
+        cachedEmail = nil
+        cachedEmailAt = .distantPast
+    }
+
     private func resolveProfileName() -> String? {
         let now = Date()
         if now.timeIntervalSince(cachedEmailAt) > Self.emailCacheTTL {

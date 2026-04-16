@@ -17,6 +17,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var profileManager: ProfileManager!
     private var overviewViewModel: OverviewViewModel!
     private var activeProfileObserver: NSObjectProtocol?
+    private var profileRegistryObserver: NSObjectProtocol?
     private var usagePrefetchTimer: Timer?
 
     // Session refresh: background task writes, main thread reads
@@ -92,8 +93,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] notification in
             if let name = notification.userInfo?["profileName"] as? String {
                 Task { @MainActor [weak self] in
+                    self?.dataStore.invalidateEmailCache()
                     self?.dataStore.activeProfileName = name
                 }
+            }
+        }
+        profileRegistryObserver = NotificationCenter.default.addObserver(
+            forName: .profileRegistryDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.dataStore.updateProfileRegistry(self.profileManager.allProfiles())
             }
         }
         profileManager.prefetchAllUsageLimits()
@@ -208,6 +220,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sessionRefreshTask?.cancel()
         if let activeProfileObserver {
             NotificationCenter.default.removeObserver(activeProfileObserver)
+        }
+        if let profileRegistryObserver {
+            NotificationCenter.default.removeObserver(profileRegistryObserver)
         }
     }
 
