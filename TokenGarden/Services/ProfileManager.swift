@@ -286,12 +286,7 @@ class ProfileManager: ObservableObject {
     }
 
     func prefetchAllUsageLimits() {
-        // Sync active profile first, then fetch — serial execution prevents the race
-        // where refreshUsageLimits starts before applyActiveProfileByEmail completes.
         Task.detached(priority: .userInitiated) { [weak self] in
-            if let authInfo = CredentialsManager.fetchAuthStatus() {
-                await MainActor.run { self?.applyActiveProfileByEmail(authInfo.email) }
-            }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 let profiles = (try? self.modelContext.fetch(FetchDescriptor<Profile>())) ?? []
@@ -302,26 +297,42 @@ class ProfileManager: ObservableObject {
         }
     }
 
+    /// 앱 시작 시 1회만 호출: 키체인 계정과 활성 프로필 동기화
+    func syncOnLaunch() {
+        Task.detached(priority: .userInitiated) { [weak self] in
+            if let authInfo = CredentialsManager.fetchAuthStatus() {
+                await MainActor.run { self?.applyActiveProfileByEmail(authInfo) }
+            }
+        }
+    }
+
     /// Detects the actual logged-in account from keychain and updates isActive flags.
     /// Fixes desync when the user switches accounts outside the app (e.g. via claude auth login).
     func syncActiveProfileWithKeychain() {
         Task.detached(priority: .userInitiated) { [weak self] in
             guard let authInfo = CredentialsManager.fetchAuthStatus() else { return }
             await MainActor.run { [weak self] in
-                self?.applyActiveProfileByEmail(authInfo.email)
+                self?.applyActiveProfileByEmail(authInfo)
             }
         }
     }
 
-    private func applyActiveProfileByEmail(_ email: String) {
+    private func applyActiveProfileByEmail(_ authInfo: ClaudeAuthInfo) {
         // Don't override a manual switch for the lockout period — the keychain
         // may still reflect the previous profile's email while the token refresh completes.
         guard Date().timeIntervalSince(lastManualSwitchAt) > manualSwitchLockout else { return }
         let all = allProfiles()
-        guard let match = all.first(where: { $0.email == email }) else { return }
+        guard let match = all.first(where: { $0.email == authInfo.email }) else { return }
+
+        // Always refresh the plan — it may have changed since the profile was saved
+        if match.plan != authInfo.plan {
+            match.plan = authInfo.plan
+            try? modelContext.save()
+        }
+
         guard match.email != activeProfile?.email else { return }
 
-        all.forEach { $0.isActive = ($0.email == email) }
+        all.forEach { $0.isActive = ($0.email == authInfo.email) }
         try? modelContext.save()
         activeProfile = match
         usageLimitsCache.removeAll()

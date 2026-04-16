@@ -9,6 +9,8 @@ struct ProfileBannerView: View {
 
     @Query private var codexProfiles: [CodexProfile]
     @AppStorage("codexModel") private var codexModel: String = "gpt-5.4"
+    @State private var codexLimits: CodexUsageLimits?
+    @State private var codexLimitsLoadedAt: Date = .distantPast
 
     private var activeCodexProfile: CodexProfile? {
         guard let email = CodexWatcher.currentAccount()?.email else { return nil }
@@ -134,6 +136,12 @@ struct ProfileBannerView: View {
                     }
                     .buttonStyle(.plain)
 
+                    // Codex rate limits
+                    if let limits = codexLimits {
+                        codexLimitRow(label: "5h session", utilization: limits.fiveHourUtilization, resetAt: limits.fiveHourResetAt)
+                        codexLimitRow(label: "7d rolling", utilization: limits.sevenDayUtilization, resetAt: limits.sevenDayResetAt)
+                    }
+
                     // Codex model selector
                     HStack(spacing: 4) {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -160,7 +168,60 @@ struct ProfileBannerView: View {
                 }
                 .padding(8)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .task {
+                    let ttl: TimeInterval = 300  // 5분 캐시
+                    guard Date().timeIntervalSince(codexLimitsLoadedAt) > ttl else { return }
+                    if let limits = await CodexWatcher.fetchUsageLimits() {
+                        codexLimits = limits
+                        codexLimitsLoadedAt = Date()
+                    }
+                }
             }
+        }
+    }
+
+    private func resetLabel(for date: Date) -> String {
+        let diff = date.timeIntervalSinceNow
+        if diff <= 0 { return "Reset" }
+        let hours = Int(diff / 3600)
+        let minutes = Int((diff.truncatingRemainder(dividingBy: 3600)) / 60)
+        if hours > 0 { return "in \(hours)h \(minutes)m" }
+        return "in \(minutes)m"
+    }
+
+    private func limitBarColor(_ utilization: Double) -> Color {
+        if utilization >= 0.9 { return .red }
+        if utilization >= 0.7 { return .orange }
+        return .green
+    }
+
+    @ViewBuilder
+    private func codexLimitRow(label: String, utilization: Double, resetAt: Date) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(resetLabel(for: resetAt))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text(String(format: "%.0f%%", utilization * 100))
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                    .foregroundStyle(utilization >= 0.9 ? Color.red : .primary)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.secondary.opacity(0.15))
+                        .frame(height: 4)
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(limitBarColor(utilization))
+                        .frame(width: geo.size.width * min(utilization, 1.0), height: 4)
+                }
+            }
+            .frame(height: 4)
         }
     }
 

@@ -108,6 +108,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.dataStore.updateProfileRegistry(self.profileManager.allProfiles())
             }
         }
+        profileManager.syncOnLaunch()
         profileManager.prefetchAllUsageLimits()
         usagePrefetchTimer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
