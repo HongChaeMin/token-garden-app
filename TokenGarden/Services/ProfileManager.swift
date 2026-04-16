@@ -144,7 +144,7 @@ class ProfileManager: ObservableObject {
     // MARK: - Switch
 
     @discardableResult
-    func switchTo(profileName: String) -> Bool {
+    func switchTo(profileName: String, isManual: Bool = true) -> Bool {
         switchError = nil
         let descriptor = FetchDescriptor<Profile>(
             predicate: #Predicate { $0.name == profileName }
@@ -158,11 +158,14 @@ class ProfileManager: ObservableObject {
             return false
         }
 
-        // Save current keychain credentials to the outgoing profile
-        // (Claude Code may have refreshed the token since we last saved)
+        // Save current keychain credentials to the outgoing profile —
+        // but only if the keychain still belongs to this profile's account.
         if let current = activeProfile,
            let freshCreds = credentialsManager.readCredentials() {
-            current.credentialsJSON = freshCreds
+            let keychainEmail = CredentialsManager.fetchAuthStatus()?.email
+            if keychainEmail == current.email {
+                current.credentialsJSON = freshCreds
+            }
         }
 
         // Deactivate all currently active profiles
@@ -178,7 +181,7 @@ class ProfileManager: ObservableObject {
         // Activate target
         target.isActive = true
         activeProfile = target
-        lastManualSwitchAt = Date()
+        if isManual { lastManualSwitchAt = Date() }
         try? modelContext.save()
 
         // Write target's credentials to keychain
@@ -218,16 +221,23 @@ class ProfileManager: ObservableObject {
         guard let profiles = try? modelContext.fetch(allDescriptor),
               profiles.count >= 2 else {
             // Single profile: still check model downgrade
-            autoBalanceModel()
+            autoBalanceModel(profileCount: 1)
             return
         }
 
-        // Only consider profiles with cached API usage data
+        // All profiles must have cached limits to make a sound decision.
+        // Partial data (e.g. expired tokens) leads to incorrect switching.
+        let allCached = profiles.allSatisfy { usageLimitsCache[$0.name] != nil }
+        guard allCached else {
+            autoBalanceModel(profileCount: profiles.count)
+            return
+        }
+
         var leastUsed: Profile?
         var leastScore = Double.greatestFiniteMagnitude
 
         for profile in profiles {
-            guard let limits = usageLimitsCache[profile.name] else { continue }
+            let limits = usageLimitsCache[profile.name]!
             let score = max(limits.fiveHourUtilization, limits.sevenDayUtilization)
             if score < leastScore {
                 leastScore = score
@@ -235,9 +245,6 @@ class ProfileManager: ObservableObject {
             }
         }
 
-        // Only switch if the target is genuinely less loaded than the current active profile.
-        // If active profile has no cache (e.g. API failed), don't switch blindly —
-        // the candidate might itself be heavily loaded.
         let activeScore = activeProfile.flatMap { usageLimitsCache[$0.name] }
             .map { max($0.fiveHourUtilization, $0.sevenDayUtilization) }
 
@@ -245,16 +252,19 @@ class ProfileManager: ObservableObject {
            target.name != activeProfile?.name,
            let currentScore = activeScore,
            leastScore < currentScore {
-            switchTo(profileName: target.name)
+            switchTo(profileName: target.name, isManual: false)
         }
 
-        autoBalanceModel()
+        autoBalanceModel(profileCount: profiles.count)
     }
 
-    /// Downgrades to Sonnet when all profiles' Opus is near limit, upgrades back when headroom available
-    private func autoBalanceModel() {
+    /// Downgrades to Sonnet when all profiles' Opus is near limit, upgrades back when headroom available.
+    /// Requires ALL profiles to have cached limits — partial data can cause incorrect downgrades.
+    private func autoBalanceModel(profileCount: Int) {
         guard UserDefaults.standard.bool(forKey: "modelAutoBalancingEnabled") else { return }
         guard !usageLimitsCache.isEmpty else { return }
+        // Don't decide on partial data: if 1 of 3 profiles expired, skip
+        guard usageLimitsCache.count >= profileCount else { return }
 
         let allAboveThreshold = usageLimitsCache.values.allSatisfy { limits in
             max(limits.fiveHourUtilization, limits.sevenDayUtilization) >= modelDowngradeThreshold
@@ -373,10 +383,16 @@ class ProfileManager: ObservableObject {
             }
             let limits = await CredentialsManager.fetchUsageLimits(oauthToken: token)
 
-            // If the active profile succeeded, refresh stored credentials from keychain
+            // If the active profile succeeded, refresh stored credentials from keychain —
+            // but ONLY if the keychain token still belongs to this profile's account.
+            // Claude Code may have refreshed the keychain with a different account's token.
             if isActive, limits != nil, let freshCreds = credsMgr.readCredentials() {
+                let keychainEmail = CredentialsManager.fetchAuthStatus()?.email
                 await MainActor.run {
-                    self?.updateStoredCredentials(name: profileName, credentials: freshCreds)
+                    if let profileEmail = self?.profileEmail(name: profileName),
+                       keychainEmail == profileEmail {
+                        self?.updateStoredCredentials(name: profileName, credentials: freshCreds)
+                    }
                 }
             }
 
@@ -393,6 +409,11 @@ class ProfileManager: ObservableObject {
         }
     }
 
+
+    private func profileEmail(name: String) -> String? {
+        let descriptor = FetchDescriptor<Profile>(predicate: #Predicate { $0.name == name })
+        return (try? modelContext.fetch(descriptor).first)?.email
+    }
 
     private func updateStoredCredentials(name: String, credentials: Data) {
         let descriptor = FetchDescriptor<Profile>(predicate: #Predicate { $0.name == name })
