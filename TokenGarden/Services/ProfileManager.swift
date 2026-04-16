@@ -19,6 +19,8 @@ class ProfileManager: ObservableObject {
     @Published var currentModel: String = ClaudeSettingsManager.currentModel() ?? "opus"
     private let cacheTTL: TimeInterval = 300  // 5 minutes
     private let modelDowngradeThreshold: Double = 0.80
+    private var lastManualSwitchAt: Date = .distantPast
+    private let manualSwitchLockout: TimeInterval = 60  // ignore keychain sync for 60s after manual switch
 
     init(modelContext: ModelContext, credentialsManager: CredentialsManager = CredentialsManager()) {
         self.modelContext = modelContext
@@ -176,6 +178,7 @@ class ProfileManager: ObservableObject {
         // Activate target
         target.isActive = true
         activeProfile = target
+        lastManualSwitchAt = Date()
         try? modelContext.save()
 
         // Write target's credentials to keychain
@@ -312,6 +315,9 @@ class ProfileManager: ObservableObject {
     }
 
     private func applyActiveProfileByEmail(_ email: String) {
+        // Don't override a manual switch for the lockout period — the keychain
+        // may still reflect the previous profile's email while the token refresh completes.
+        guard Date().timeIntervalSince(lastManualSwitchAt) > manualSwitchLockout else { return }
         let all = allProfiles()
         guard let match = all.first(where: { $0.email == email }) else { return }
         guard match.email != activeProfile?.email else { return }
@@ -430,8 +436,6 @@ class ProfileManager: ObservableObject {
         guard let profiles = try? modelContext.fetch(descriptor) else { return }
 
         let credentialPairs = profiles.map { ($0.name, $0.credentialsJSON) }
-        let activeCredentials = activeProfile?.credentialsJSON
-        let activeProfileName = activeProfile?.name
         let credsMgr = credentialsManager
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
