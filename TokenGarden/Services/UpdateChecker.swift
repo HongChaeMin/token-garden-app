@@ -6,7 +6,7 @@ class UpdateChecker: ObservableObject {
     @Published var downloadURL: URL?
     @Published var isChecking = false
 
-    private let repo = "chaeminhong-rsquare/token-garden-app"
+    private let repo = "HongChaeMin/token-garden-app"
 
     var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
