@@ -16,7 +16,10 @@ struct UsageLimits {
 
 struct CredentialsManager {
     private static let keychainService = "Claude Code-credentials"
-    private static var keychainAccount: String { NSUserName() }
+    // Claude Code stores credentials with an empty-string account, not NSUserName().
+    // Using NSUserName() creates a second, separate keychain entry that Claude Code
+    // never reads — causing all credential writes to be silently ignored by the CLI.
+    private static let keychainAccount = ""
 
     func readCredentials() -> Data? {
         Self.currentKeychainData()
