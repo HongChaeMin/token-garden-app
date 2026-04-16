@@ -149,20 +149,27 @@ class ProfileManager: ObservableObject {
         let descriptor = FetchDescriptor<Profile>(
             predicate: #Predicate { $0.name == profileName }
         )
-        guard let target = try? modelContext.fetch(descriptor).first else { return false }
+        guard let target = try? modelContext.fetch(descriptor).first else {
+            print("[Switch] FAIL: profile '\(profileName)' not found in DB")
+            return false
+        }
 
         // Validate stored credentials before switching
         guard !target.credentialsJSON.isEmpty,
               CredentialsManager.oauthToken(from: target.credentialsJSON) != nil else {
+            print("[Switch] FAIL: no valid credentials for '\(profileName)'")
             switchError = "No credentials saved for \"\(profileName)\". Save this account first."
             return false
         }
+
+        print("[Switch] START: \(activeProfile?.name ?? "nil") → \(profileName)")
 
         // Save current keychain credentials to the outgoing profile
         // (Claude Code may have refreshed the token since we last saved)
         if let current = activeProfile,
            let freshCreds = credentialsManager.readCredentials() {
             current.credentialsJSON = freshCreds
+            print("[Switch] Saved outgoing profile '\(current.name)' creds from keychain")
         }
 
         // Deactivate all currently active profiles
@@ -183,6 +190,7 @@ class ProfileManager: ObservableObject {
 
         // Write target's credentials to keychain
         let writeOK = credentialsManager.writeCredentials(target.credentialsJSON)
+        print("[Switch] writeCredentials → \(writeOK ? "OK" : "FAILED")")
         if !writeOK {
             switchError = "Failed to write credentials to keychain."
         }
@@ -204,7 +212,9 @@ class ProfileManager: ObservableObject {
         let switchedName = target.name
         let credsMgr = credentialsManager
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            _ = CredentialsManager.refreshOAuthToken()
+            print("[Switch] refreshOAuthToken start")
+            let refreshed = CredentialsManager.refreshOAuthToken()
+            print("[Switch] refreshOAuthToken → \(refreshed != nil ? "got token" : "nil/failed")")
             // Persist the freshly-written keychain credentials back into the profile
             if let fresh = credsMgr.readCredentials() {
                 DispatchQueue.main.async {
@@ -215,9 +225,12 @@ class ProfileManager: ObservableObject {
                         self?.refreshUsageLimits(for: profile)
                     }
                 }
+            } else {
+                print("[Switch] readCredentials after refresh returned nil")
             }
         }
 
+        print("[Switch] DONE: activeProfile=\(activeProfile?.name ?? "nil")")
         return true
     }
 
@@ -319,10 +332,15 @@ class ProfileManager: ObservableObject {
     private func applyActiveProfileByEmail(_ email: String) {
         // Don't override a manual switch for the lockout period — the keychain
         // may still reflect the previous profile's email while the token refresh completes.
-        guard Date().timeIntervalSince(lastManualSwitchAt) > manualSwitchLockout else { return }
+        let elapsed = Date().timeIntervalSince(lastManualSwitchAt)
+        guard elapsed > manualSwitchLockout else {
+            print("[AutoSync] SKIPPED: manual switch \(Int(elapsed))s ago (lockout=\(Int(manualSwitchLockout))s)")
+            return
+        }
         let all = allProfiles()
         guard let match = all.first(where: { $0.email == email }) else { return }
         guard match.email != activeProfile?.email else { return }
+        print("[AutoSync] Overriding active profile: \(activeProfile?.name ?? "nil") → \(match.name) (email=\(email))")
 
         all.forEach { $0.isActive = ($0.email == email) }
         try? modelContext.save()
