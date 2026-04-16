@@ -114,7 +114,11 @@ class CodexWatcher {
             return ([], previousSnapshots)
         }
         var db: OpaquePointer?
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK else {
+        // Use URI with immutable=1 so SQLite skips WAL file creation in read-only mode.
+        // Without this, SQLite prints "cannot open sqlite-wal" warnings to stderr when
+        // the WAL file doesn't exist (e.g. after a clean DB checkpoint).
+        let uri = "file:\(path)?immutable=1&mode=ro"
+        guard sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_URI, nil) == SQLITE_OK else {
             return ([], previousSnapshots)
         }
         defer { sqlite3_close(db) }

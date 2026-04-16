@@ -198,23 +198,11 @@ class ProfileManager: ObservableObject {
             userInfo: ["profileName": target.name]
         )
 
-        // Refresh token in background — stored accessToken may be expired.
-        // claude --print-access-token uses the refresh token to get a fresh one
-        // and writes it back to keychain automatically.
+        // Fetch usage limits for the switched profile on main actor.
         let switchedName = target.name
-        let credsMgr = credentialsManager
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            _ = CredentialsManager.refreshOAuthToken()
-            // Persist the freshly-written keychain credentials back into the profile
-            if let fresh = credsMgr.readCredentials() {
-                DispatchQueue.main.async {
-                    self?.updateStoredCredentials(name: switchedName, credentials: fresh)
-                    // Fetch usage limits for the switched profile with the fresh token
-                    if let profile = self?.allProfiles().first(where: { $0.name == switchedName }) {
-                        self?.usageLimitsCache.removeValue(forKey: switchedName)
-                        self?.refreshUsageLimits(for: profile)
-                    }
-                }
+        DispatchQueue.main.async { [weak self] in
+            if let profile = self?.allProfiles().first(where: { $0.name == switchedName }) {
+                self?.refreshUsageLimits(for: profile)
             }
         }
 
@@ -363,15 +351,7 @@ class ProfileManager: ObservableObject {
             let token: String?
             if isActive {
                 // Active profile: keychain is the source of truth.
-                // If the token is missing, attempt a CLI refresh before falling back
-                // to the stored credentialsJSON (which may also be stale).
-                if let t = CredentialsManager.currentOAuthToken() {
-                    token = t
-                } else if let t = CredentialsManager.refreshOAuthToken() {
-                    token = t
-                } else {
-                    token = CredentialsManager.oauthToken(from: creds)
-                }
+                token = CredentialsManager.currentOAuthToken() ?? CredentialsManager.oauthToken(from: creds)
             } else {
                 token = CredentialsManager.oauthToken(from: creds)
             }
