@@ -42,8 +42,14 @@ class ProfileManager: ObservableObject {
     // MARK: - CRUD
 
     func saveCurrentAccount(name: String) -> Bool {
-        guard let authInfo = CredentialsManager.fetchAuthStatus() else { return false }
+        guard let authInfo = CredentialsManager.fetchAuthStatus() else {
+            print("[Save] fetchAuthStatus failed")
+            return false
+        }
         let credentials = credentialsManager.readCredentials() ?? Data()
+        let oauthAccount = CredentialsManager.readOAuthAccount() ?? Data()
+        let savedToken = CredentialsManager.oauthToken(from: credentials)
+        print("[Save] name=\(name) email=\(authInfo.email) credsSize=\(credentials.count) tokenPrefix=\(savedToken?.prefix(20) ?? "nil") oauthAccountSize=\(oauthAccount.count)")
 
         // Deactivate all existing profiles
         let allDescriptor = FetchDescriptor<Profile>()
@@ -60,10 +66,12 @@ class ProfileManager: ObservableObject {
             existing.credentialsJSON = credentials
             existing.plan = authInfo.plan
             existing.isActive = true
+            existing.oauthAccountJSON = oauthAccount
             profile = existing
         } else {
             profile = Profile(name: name, email: authInfo.email, plan: authInfo.plan, credentialsJSON: credentials)
             profile.isActive = true
+            profile.oauthAccountJSON = oauthAccount
             modelContext.insert(profile)
         }
 
@@ -158,13 +166,39 @@ class ProfileManager: ObservableObject {
             return false
         }
 
-        // Save current keychain credentials to the outgoing profile
+        // Save current keychain credentials to the outgoing profile —
+        // but only if the keychain still belongs to this profile's account.
         if let current = activeProfile,
-           let freshCreds = credentialsManager.readCredentials() {
+           let freshCreds = credentialsManager.readCredentials(),
+           let keychainEmail = CredentialsManager.fetchAuthStatus()?.email,
+           keychainEmail == current.email {
             current.credentialsJSON = freshCreds
         }
 
-        // Deactivate all currently active profiles
+        // Write target's credentials to keychain FIRST
+        let writeOK = credentialsManager.writeCredentials(target.credentialsJSON)
+        guard writeOK else {
+            switchError = "Failed to write credentials to keychain."
+            return false
+        }
+
+        // Write target's oauthAccount to ~/.claude.json
+        if !target.oauthAccountJSON.isEmpty {
+            let oauthOK = CredentialsManager.writeOAuthAccount(target.oauthAccountJSON)
+            guard oauthOK else {
+                switchError = "Failed to write oauthAccount to config."
+                return false
+            }
+        }
+
+        // Verify the switch actually took effect
+        if let authInfo = CredentialsManager.fetchAuthStatus(),
+           authInfo.email != target.email {
+            switchError = "Switch failed: auth shows \(authInfo.email), expected \(target.email)"
+            return false
+        }
+
+        // All writes succeeded — now mark as active
         let activeDescriptor = FetchDescriptor<Profile>(
             predicate: #Predicate { $0.isActive == true }
         )
@@ -174,30 +208,19 @@ class ProfileManager: ObservableObject {
             }
         }
 
-        // Activate target
         target.isActive = true
         activeProfile = target
         if isManual { lastManualSwitchAt = Date() }
         try? modelContext.save()
 
-        // Write target's credentials to keychain
-        let writeOK = credentialsManager.writeCredentials(target.credentialsJSON)
-        if !writeOK {
-            switchError = "Failed to write credentials to keychain."
-        }
-
-        // Clear all caches: the keychain now holds the new profile's token,
-        // so any cached limit fetched with the previous token is stale.
         usageLimitsCache.removeAll()
 
-        // Notify dataStore to update activeProfileName
         NotificationCenter.default.post(
             name: .activeProfileNameDidChange,
             object: self,
             userInfo: ["profileName": target.name]
         )
 
-        // Fetch usage limits for the switched profile on main actor.
         let switchedName = target.name
         DispatchQueue.main.async { [weak self] in
             if let profile = self?.allProfiles().first(where: { $0.name == switchedName }) {
@@ -367,41 +390,22 @@ class ProfileManager: ObservableObject {
 
         let creds = profile.credentialsJSON
         let profileName = profile.name
-        let isActive = profile.name == activeProfile?.name
 
         loadingProfiles.insert(profileName)
-
-        let credsMgr = credentialsManager
         // Task.detached replaces DispatchQueue.global — the underlying fetch
         // now suspends via async/await instead of blocking a GCD worker on a
         // DispatchSemaphore, and the task honours cooperative cancellation.
         Task.detached(priority: .utility) { [weak self] in
-            let token: String?
-            if isActive {
-                // Active profile: keychain is the source of truth.
-                token = CredentialsManager.currentOAuthToken() ?? CredentialsManager.oauthToken(from: creds)
-            } else {
-                token = CredentialsManager.oauthToken(from: creds)
-            }
+            // Always use stored credentials — the keychain can be changed by
+            // external processes (Claude Code login, manual switching) and may
+            // not match this profile's account.
+            let token = CredentialsManager.oauthToken(from: creds)
 
             guard let token else {
                 _ = await MainActor.run { self?.loadingProfiles.remove(profileName) }
                 return
             }
             let limits = await CredentialsManager.fetchUsageLimits(oauthToken: token)
-
-            // If the active profile succeeded, refresh stored credentials from keychain —
-            // but ONLY if the keychain token still belongs to this profile's account.
-            // Claude Code may have refreshed the keychain with a different account's token.
-            if isActive, limits != nil, let freshCreds = credsMgr.readCredentials() {
-                let keychainEmail = CredentialsManager.fetchAuthStatus()?.email
-                await MainActor.run {
-                    if let profileEmail = self?.profileEmail(name: profileName),
-                       keychainEmail == profileEmail {
-                        self?.updateStoredCredentials(name: profileName, credentials: freshCreds)
-                    }
-                }
-            }
 
             await MainActor.run {
                 self?.loadingProfiles.remove(profileName)

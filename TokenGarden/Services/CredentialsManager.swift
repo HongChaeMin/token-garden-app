@@ -16,6 +16,7 @@ struct UsageLimits {
 
 struct CredentialsManager {
     private static let keychainService = "Claude Code-credentials"
+    private static var keychainAccount: String { NSUserName() }
 
     func readCredentials() -> Data? {
         Self.currentKeychainData()
@@ -24,12 +25,9 @@ struct CredentialsManager {
     @discardableResult
     func writeCredentials(_ data: Data) -> Bool {
         guard let json = String(data: data, encoding: .utf8) else { return false }
-        // Claude Code stores credentials with no account (NULL).
-        // Use "-a ''" to match the same entry so Token Garden and Claude Code
-        // share a single keychain item.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["add-generic-password", "-s", Self.keychainService, "-a", "", "-w", json, "-U"]
+        process.arguments = ["add-generic-password", "-s", Self.keychainService, "-a", Self.keychainAccount, "-w", json, "-U"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try? process.run()
@@ -41,9 +39,7 @@ struct CredentialsManager {
         let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        // No -a flag: matches the first entry for this service, which is
-        // Claude Code's entry (account=NULL).
-        process.arguments = ["find-generic-password", "-s", keychainService, "-w"]
+        process.arguments = ["find-generic-password", "-s", keychainService, "-a", keychainAccount, "-w"]
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         try? process.run()
@@ -67,6 +63,40 @@ struct CredentialsManager {
             if FileManager.default.fileExists(atPath: path) { return path }
         }
         return nil
+    }
+
+    // MARK: - .claude.json oauthAccount
+
+    private static var claudeConfigPath: String {
+        NSHomeDirectory() + "/.claude.json"
+    }
+
+    /// Reads the oauthAccount object from ~/.claude.json
+    static func readOAuthAccount() -> Data? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: claudeConfigPath)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let account = json["oauthAccount"]
+        else { return nil }
+        return try? JSONSerialization.data(withJSONObject: account)
+    }
+
+    /// Writes the oauthAccount object to ~/.claude/.claude.json
+    @discardableResult
+    static func writeOAuthAccount(_ accountData: Data) -> Bool {
+        let path = claudeConfigPath
+        let url = URL(fileURLWithPath: path)
+        guard let account = try? JSONSerialization.jsonObject(with: accountData) else { return false }
+
+        var config: [String: Any]
+        if let existing = try? Data(contentsOf: url),
+           let parsed = try? JSONSerialization.jsonObject(with: existing) as? [String: Any] {
+            config = parsed
+        } else {
+            config = [:]
+        }
+        config["oauthAccount"] = account
+        guard let output = try? JSONSerialization.data(withJSONObject: config, options: [.sortedKeys]) else { return false }
+        return (try? output.write(to: url, options: .atomic)) != nil
     }
 
     /// Runs `claude auth status` CLI command to get current account info
