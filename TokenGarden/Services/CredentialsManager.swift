@@ -16,7 +16,6 @@ struct UsageLimits {
 
 struct CredentialsManager {
     private static let keychainService = "Claude Code-credentials"
-    private static var keychainAccount: String { NSUserName() }
 
     func readCredentials() -> Data? {
         Self.currentKeychainData()
@@ -25,9 +24,12 @@ struct CredentialsManager {
     @discardableResult
     func writeCredentials(_ data: Data) -> Bool {
         guard let json = String(data: data, encoding: .utf8) else { return false }
+        // Claude Code stores credentials with no account (NULL).
+        // Use "-a ''" to match the same entry so Token Garden and Claude Code
+        // share a single keychain item.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["add-generic-password", "-s", Self.keychainService, "-a", Self.keychainAccount, "-w", json, "-U"]
+        process.arguments = ["add-generic-password", "-s", Self.keychainService, "-a", "", "-w", json, "-U"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try? process.run()
@@ -39,7 +41,9 @@ struct CredentialsManager {
         let pipe = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", keychainService, "-a", keychainAccount, "-w"]
+        // No -a flag: matches the first entry for this service, which is
+        // Claude Code's entry (account=NULL).
+        process.arguments = ["find-generic-password", "-s", keychainService, "-w"]
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         try? process.run()

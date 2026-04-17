@@ -158,14 +158,10 @@ class ProfileManager: ObservableObject {
             return false
         }
 
-        // Save current keychain credentials to the outgoing profile —
-        // but only if the keychain still belongs to this profile's account.
+        // Save current keychain credentials to the outgoing profile
         if let current = activeProfile,
            let freshCreds = credentialsManager.readCredentials() {
-            let keychainEmail = CredentialsManager.fetchAuthStatus()?.email
-            if keychainEmail == current.email {
-                current.credentialsJSON = freshCreds
-            }
+            current.credentialsJSON = freshCreds
         }
 
         // Deactivate all currently active profiles
@@ -252,7 +248,18 @@ class ProfileManager: ObservableObject {
            target.name != activeProfile?.name,
            let currentScore = activeScore,
            leastScore < currentScore {
-            switchTo(profileName: target.name, isManual: false)
+            // Verify the target's token is still valid before switching.
+            // An expired token would break the active Claude Code session.
+            let targetCreds = target.credentialsJSON
+            let targetName = target.name
+            Task.detached(priority: .utility) { [weak self] in
+                guard let token = CredentialsManager.oauthToken(from: targetCreds) else { return }
+                let valid = await CredentialsManager._fetchUsageLimitsOnce(token: token) != nil
+                await MainActor.run {
+                    guard valid else { return }
+                    self?.switchTo(profileName: targetName, isManual: false)
+                }
+            }
         }
 
         autoBalanceModel(profileCount: profiles.count)
