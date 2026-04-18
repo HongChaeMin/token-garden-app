@@ -120,7 +120,7 @@ struct SkillBreakdownView: View {
                 Text("모든 세션의 시스템 프롬프트에 포함되는 (name + description) 합:")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("\(skills.baselineChars) chars ≈ \(Int(Double(skills.baselineChars) / 3.5)) tokens  ·  설치 수 \(skills.installed.count)")
+                Text("\(skills.baselineChars) chars ≈ \(BakedCalibration.estimate(skills.baselineChars, as: .skillMarkdown)) tokens  ·  설치 수 \(skills.installed.count)")
                     .font(.system(.body, design: .monospaced))
                     .padding(.vertical, 2)
             }

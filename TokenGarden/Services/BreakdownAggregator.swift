@@ -32,9 +32,11 @@ struct MCPServerRow: Sendable, Identifiable {
     /// Per-call average char footprint — useful for spotting unusually
     /// chatty tools that are worth prompt-shrinking.
     var averageInputChars: Int { calls > 0 ? totalInputChars / calls : 0 }
-    /// Estimated tokens (fallback = chars / 3.5). UI may replace with
-    /// exact count from TokenCounter.
-    var approxTokens: Int { max(0, Int(Double(totalInputChars) / 3.5)) }
+    /// Estimated tokens via the mcpToolSchema calibration ratio.
+    /// Swap to count_tokens API results once keys/credits are available.
+    var approxTokens: Int {
+        BakedCalibration.estimate(totalInputChars, as: .mcpToolSchema)
+    }
 }
 
 struct ToolRow: Sendable, Identifiable {
@@ -77,7 +79,9 @@ struct HookRow: Sendable, Identifiable {
     let category: HookCategory
     let blocks: Int
     let totalChars: Int
-    var approxTokens: Int { max(0, Int(Double(totalChars) / 3.5)) }
+    var approxTokens: Int {
+        BakedCalibration.estimate(totalChars, as: .systemReminder)
+    }
 }
 
 struct ClaudeMdBreakdown: Sendable {
@@ -85,7 +89,9 @@ struct ClaudeMdBreakdown: Sendable {
     let totalExpandedChars: Int
     let cyclesDetected: [String]
     let missingReferences: [String]
-    var approxTokens: Int { max(0, Int(Double(totalExpandedChars) / 3.5)) }
+    var approxTokens: Int {
+        BakedCalibration.estimate(totalExpandedChars, as: .claudeMdProse)
+    }
 }
 
 // MARK: - Aggregator
