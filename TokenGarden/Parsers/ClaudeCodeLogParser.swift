@@ -9,7 +9,7 @@ struct ClaudeCodeLogParser: TokenLogParser {
         return f
     }()
 
-    private static nonisolated(unsafe) let systemReminderRegex: NSRegularExpression = {
+    private static let systemReminderRegex: NSRegularExpression = {
         // Matches <system-reminder>...</system-reminder>, DOTALL
         return try! NSRegularExpression(
             pattern: "<system-reminder>([\\s\\S]*?)</system-reminder>",
