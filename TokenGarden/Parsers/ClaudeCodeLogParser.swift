@@ -140,13 +140,10 @@ struct ClaudeCodeLogParser: TokenLogParser {
     /// - Otherwise: .native.
     static func classify(toolName: String, input: Any?) -> (ToolCategory, String?, String?) {
         if toolName.hasPrefix("mcp__") {
-            let parts = toolName.split(separator: "_").filter { !$0.isEmpty }
-            // "mcp__plugin_rtb_rtb-db__query_db" → parts after collapsing
-            // doubled underscores. Simpler: split on "__" literally.
+            // "mcp__plugin_rtb_rtb-db__query_db" → split on "__" literally.
             let literal = toolName.components(separatedBy: "__")
             let server = literal.count > 1 ? literal[1] : toolName
             return (.mcp, server, nil)
-            _ = parts  // keep the linter happy about the unused variable
         }
         if toolName == "Skill" {
             let skill = (input as? [String: Any])?["skill"] as? String
