@@ -1,11 +1,10 @@
 import SwiftUI
-import SwiftData
 
 struct PopoverView: View {
     @EnvironmentObject var menuBarController: MenuBarController
     @Environment(OverviewViewModel.self) private var vm
 
-    enum Tab { case overview, accounts }
+    enum Tab { case overview, accounts, breakdown }
     enum OverviewSource: String, CaseIterable {
         case claude = "Claude"
         case codex = "Codex"
@@ -139,6 +138,11 @@ struct PopoverView: View {
                                 .foregroundStyle(activeTab == .accounts ? .primary : .tertiary)
                         }
                         .buttonStyle(.plain)
+                        Button(action: { activeTab = .breakdown }) {
+                            Image(systemName: "square.grid.2x2")
+                                .foregroundStyle(activeTab == .breakdown ? .primary : .tertiary)
+                        }
+                        .buttonStyle(.plain)
                         Button(action: { showSettings = true }) {
                             Image(systemName: "gearshape")
                                 .foregroundStyle(.secondary)
@@ -153,7 +157,11 @@ struct PopoverView: View {
 
             Divider()
 
-            if let reason = emptyStateReason {
+
+            if activeTab == .breakdown && !showSettings && !showProfiles && !showCodexProfiles {
+                BreakdownView()
+                    .transition(.identity)
+            } else if let reason = emptyStateReason {
                 EmptyStateView(reason: reason)
                     .frame(minHeight: 200)
             } else if vm.isInitialLoading && activeTab == .overview && !showSettings && !showProfiles && !showCodexProfiles {
