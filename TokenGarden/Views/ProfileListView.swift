@@ -145,7 +145,7 @@ struct ProfileListView: View {
                     #if DEBUG
                     Spacer()
                     Button("Force Balance") {
-                        profileManager.balanceIfNeeded()
+                        profileManager.balanceIfNeeded(force: true)
                     }
                     .controlSize(.small)
                     #endif

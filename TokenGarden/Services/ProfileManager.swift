@@ -228,19 +228,19 @@ class ProfileManager: ObservableObject {
 
     // MARK: - Auto Balancing
 
-    func balanceIfNeeded() {
+    func balanceIfNeeded(force: Bool = false) {
         // Don't auto-balance right after a manual switch — user chose this profile intentionally.
-        guard Date().timeIntervalSince(lastManualSwitchAt) > manualSwitchLockout else { return }
+        if !force {
+            guard Date().timeIntervalSince(lastManualSwitchAt) > manualSwitchLockout else { return }
+        }
         let allDescriptor = FetchDescriptor<Profile>()
         guard let profiles = try? modelContext.fetch(allDescriptor),
               profiles.count >= 2 else {
-            // Single profile: still check model downgrade
             autoBalanceModel(profileCount: 1)
             return
         }
 
         // All profiles must have cached limits to make a sound decision.
-        // Partial data (e.g. expired tokens) leads to incorrect switching.
         let allCached = profiles.allSatisfy { usageLimitsCache[$0.name] != nil }
         guard allCached else {
             autoBalanceModel(profileCount: profiles.count)
@@ -266,18 +266,7 @@ class ProfileManager: ObservableObject {
            target.name != activeProfile?.name,
            let currentScore = activeScore,
            leastScore < currentScore {
-            // Verify the target's token is still valid before switching.
-            // An expired token would break the active Claude Code session.
-            let targetCreds = target.credentialsJSON
-            let targetName = target.name
-            Task.detached(priority: .utility) { [weak self] in
-                guard let token = CredentialsManager.oauthToken(from: targetCreds) else { return }
-                let valid = await CredentialsManager._fetchUsageLimitsOnce(token: token) != nil
-                await MainActor.run {
-                    guard valid else { return }
-                    self?.switchTo(profileName: targetName, isManual: false)
-                }
-            }
+            switchTo(profileName: target.name, isManual: false)
         }
 
         autoBalanceModel(profileCount: profiles.count)
