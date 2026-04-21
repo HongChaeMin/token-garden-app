@@ -80,11 +80,11 @@ final class TokenCountCache {
         store = (try? decoder.decode([String: CacheEntry].self, from: data)) ?? [:]
     }
 
-    private func save() {
+    private func save(snapshot: [String: CacheEntry]) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(store) else { return }
+        guard let data = try? encoder.encode(snapshot) else { return }
         try? FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -101,8 +101,9 @@ final class TokenCountCache {
     func set(_ key: String, _ entry: CacheEntry) {
         lock.lock()
         store[key] = entry
+        let snapshot = store
         lock.unlock()
-        save()
+        save(snapshot: snapshot)
     }
 }
 
