@@ -49,7 +49,7 @@ class LogWatcher {
         guard let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] else { return }
 
         let filteredPaths = paths.filter { path in
-            path.hasSuffix(".jsonl") && !URL(fileURLWithPath: path).lastPathComponent.contains("compact")
+            path.hasSuffix(".jsonl") && !URL(fileURLWithPath: path).lastPathComponent.hasSuffix("-compact.jsonl")
         }
 
         Task { @MainActor in
@@ -99,7 +99,7 @@ class LogWatcher {
                 guard let enumerator = FileManager.default.enumerator(atPath: watchPath) else { continue }
                 while let relativePath = enumerator.nextObject() as? String {
                     guard relativePath.hasSuffix(".jsonl"),
-                          !URL(fileURLWithPath: relativePath).lastPathComponent.contains("compact") else { continue }
+                          !URL(fileURLWithPath: relativePath).lastPathComponent.hasSuffix("-compact.jsonl") else { continue }
                     let fullPath = (watchPath as NSString).appendingPathComponent(relativePath)
                     guard currentOffsets[fullPath] == nil else { continue }
 

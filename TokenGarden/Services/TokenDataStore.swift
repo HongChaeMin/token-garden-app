@@ -10,6 +10,7 @@ class TokenDataStore: ObservableObject {
     private var emailToProfileName: [String: String] = [:]
     private var cachedEmail: String?
     private var cachedEmailAt: Date = .distantPast
+    private let cache = RecordCache()
     private static let saveInterval = 10
     private static let emailCacheTTL: TimeInterval = 60
 
@@ -18,6 +19,11 @@ class TokenDataStore: ObservableObject {
             profiles.map { ($0.email, $0.name) },
             uniquingKeysWith: { first, _ in first }
         )
+        cachedEmailAt = .distantPast
+    }
+
+    func invalidateEmailCache() {
+        cachedEmail = nil
         cachedEmailAt = .distantPast
     }
 
@@ -40,25 +46,13 @@ class TokenDataStore: ObservableObject {
 
     func record(_ event: TokenEvent) {
         let day = Calendar.current.startOfDay(for: event.timestamp)
-
-        let descriptor = FetchDescriptor<DailyUsage>(
-            predicate: #Predicate { $0.date == day }
-        )
-
-        let daily: DailyUsage
-        if let existing = try? modelContext.fetch(descriptor).first {
-            daily = existing
-        } else {
-            daily = DailyUsage(date: day)
-            modelContext.insert(daily)
-        }
+        let daily = dailyUsage(for: day)
 
         daily.inputTokens += event.inputTokens
         daily.outputTokens += event.outputTokens
         daily.cacheCreationTokens += event.cacheCreationTokens
         daily.cacheReadTokens += event.cacheReadTokens
 
-        // Hourly bucket
         accumulateHourlyTokens(
             day: day,
             hour: Calendar.current.component(.hour, from: event.timestamp),
@@ -85,38 +79,20 @@ class TokenDataStore: ObservableObject {
             }
         }
 
-        // Profile token tracking
         if let profileName = resolvedProfile {
-            let profileDescriptor = FetchDescriptor<ProfileTokenUsage>(
-                predicate: #Predicate { $0.profileName == profileName && $0.date == day }
-            )
-            if let existing = try? modelContext.fetch(profileDescriptor).first {
-                existing.tokens += event.totalTokens
-            } else {
-                let usage = ProfileTokenUsage(profileName: profileName, date: day, tokens: event.totalTokens)
-                modelContext.insert(usage)
-            }
+            let usage = profileTokenUsage(for: profileName, day: day)
+            usage.tokens += event.totalTokens
         }
 
-        // Session tracking
         if let sessionId = event.sessionId {
-            let sessionDescriptor = FetchDescriptor<SessionUsage>(
-                predicate: #Predicate { $0.sessionId == sessionId }
+            let session = sessionUsage(
+                for: sessionId,
+                projectName: event.projectName ?? "Unknown",
+                startTime: event.timestamp,
+                source: "claude"
             )
-            if let session = try? modelContext.fetch(sessionDescriptor).first {
-                session.totalTokens += event.totalTokens
-                session.lastTime = event.timestamp
-            } else {
-                let session = SessionUsage(
-                    sessionId: sessionId,
-                    projectName: event.projectName ?? "Unknown",
-                    startTime: event.timestamp,
-                    source: "claude"
-                )
-                session.totalTokens = event.totalTokens
-                session.lastTime = event.timestamp
-                modelContext.insert(session)
-            }
+            session.totalTokens += event.totalTokens
+            session.lastTime = event.timestamp
         }
 
         pendingSaveCount += 1
@@ -126,8 +102,14 @@ class TokenDataStore: ObservableObject {
         }
     }
 
-    func recordCodex(_ event: CodexThreadEvent) {
-        let day = Calendar.current.startOfDay(for: event.updatedAt)
+    // MARK: - Cached fetch helpers
+
+    /// Returns the `DailyUsage` for `day`, fetching once per day and caching
+    /// the live `@Model` reference. Subsequent events on the same day reuse
+    /// the cached row with zero fetches.
+    private func dailyUsage(for day: Date) -> DailyUsage {
+        cache.invalidateIfDayChanged(to: day)
+        if let cached = cache.daily { return cached }
 
         let descriptor = FetchDescriptor<DailyUsage>(
             predicate: #Predicate { $0.date == day }
@@ -139,6 +121,54 @@ class TokenDataStore: ObservableObject {
             daily = DailyUsage(date: day)
             modelContext.insert(daily)
         }
+        cache.setDaily(daily)
+        return daily
+    }
+
+    private func profileTokenUsage(for profileName: String, day: Date) -> ProfileTokenUsage {
+        cache.invalidateIfDayChanged(to: day)
+        if let cached = cache.profileTokens[profileName] { return cached }
+
+        let descriptor = FetchDescriptor<ProfileTokenUsage>(
+            predicate: #Predicate { $0.profileName == profileName && $0.date == day }
+        )
+        let usage: ProfileTokenUsage
+        if let existing = try? modelContext.fetch(descriptor).first {
+            usage = existing
+        } else {
+            usage = ProfileTokenUsage(profileName: profileName, date: day, tokens: 0)
+            modelContext.insert(usage)
+        }
+        cache.setProfileTokens(usage, forProfile: profileName)
+        return usage
+    }
+
+    private func sessionUsage(for sessionId: String, projectName: String, startTime: Date, source: String) -> SessionUsage {
+        if let cached = cache.sessions[sessionId] { return cached }
+
+        let descriptor = FetchDescriptor<SessionUsage>(
+            predicate: #Predicate { $0.sessionId == sessionId }
+        )
+        let session: SessionUsage
+        if let existing = try? modelContext.fetch(descriptor).first {
+            session = existing
+        } else {
+            session = SessionUsage(
+                sessionId: sessionId,
+                projectName: projectName,
+                startTime: startTime,
+                source: source
+            )
+            modelContext.insert(session)
+        }
+        cache.setSession(session)
+        return session
+    }
+
+    func recordCodex(_ event: CodexThreadEvent) {
+        let day = Calendar.current.startOfDay(for: event.updatedAt)
+        let daily = dailyUsage(for: day)
+
         daily.codexTokens += event.tokensUsed
         accumulateHourlyTokens(
             day: day,
@@ -147,7 +177,6 @@ class TokenDataStore: ObservableObject {
             source: "codex"
         )
 
-        // Project breakdown — prefix "Codex/" to distinguish from Claude profiles
         let codexProfileName = "Codex/" + event.accountEmail
         if let existing = daily.projectBreakdowns.first(where: {
             $0.projectName == event.projectName && $0.profileName == codexProfileName
@@ -164,27 +193,18 @@ class TokenDataStore: ObservableObject {
             daily.projectBreakdowns.append(projectUsage)
         }
 
-        let threadId = event.threadId
-        let sessionDescriptor = FetchDescriptor<SessionUsage>(
-            predicate: #Predicate { $0.sessionId == threadId }
+        let session = sessionUsage(
+            for: event.threadId,
+            projectName: event.projectName,
+            startTime: event.updatedAt,
+            source: "codex"
         )
-        if let session = try? modelContext.fetch(sessionDescriptor).first {
-            session.totalTokens += event.tokensUsed
-            session.lastTime = event.updatedAt
-            session.isActive = true
-            session.source = "codex"
-        } else {
-            let session = SessionUsage(
-                sessionId: event.threadId,
-                projectName: event.projectName,
-                startTime: event.updatedAt,
-                source: "codex"
-            )
-            session.totalTokens = event.tokensUsed
-            session.lastTime = event.updatedAt
-            session.isActive = true
-            modelContext.insert(session)
-        }
+        session.totalTokens += event.tokensUsed
+        session.lastTime = event.updatedAt
+        session.isActive = true
+        // Force-correct the source on every event in case the sessionId was
+        // previously recorded under a different source.
+        session.source = "codex"
 
         pendingSaveCount += 1
         if pendingSaveCount >= Self.saveInterval {
@@ -194,15 +214,24 @@ class TokenDataStore: ObservableObject {
     }
 
     private func accumulateHourlyTokens(day: Date, hour: Int, tokens: Int, source: String) {
+        cache.invalidateIfDayChanged(to: day)
+        if let cached = cache.hourly[RecordCache.HourlyKey(hour: hour, source: source)] {
+            cached.tokens += tokens
+            return
+        }
         let hourlyDescriptor = FetchDescriptor<HourlyUsage>(
             predicate: #Predicate { $0.date == day && $0.hour == hour && $0.source == source }
         )
+        let hourly: HourlyUsage
         if let existing = try? modelContext.fetch(hourlyDescriptor).first {
             existing.tokens += tokens
+            hourly = existing
         } else {
-            let hourly = HourlyUsage(date: day, hour: hour, tokens: tokens, source: source)
-            modelContext.insert(hourly)
+            let inserted = HourlyUsage(date: day, hour: hour, tokens: tokens, source: source)
+            modelContext.insert(inserted)
+            hourly = inserted
         }
+        cache.setHourly(hourly, forHour: hour, source: source)
     }
 
     func endSession(sessionId: String) {
@@ -214,23 +243,30 @@ class TokenDataStore: ObservableObject {
         }
     }
 
-    /// Apply active status with pre-fetched project names. Must be called on MainActor.
+    /// For each project in `activeProjects`, only its newest session (by
+    /// `lastTime`) is marked active. All others for `source` go inactive.
+    /// Runs in O(n) via one dictionary pass.
     func applyActiveStatus(source: String, activeProjects: Set<String>) {
-        let descriptor = FetchDescriptor<SessionUsage>()
+        let descriptor = FetchDescriptor<SessionUsage>(
+            predicate: #Predicate<SessionUsage> { $0.source == source }
+        )
         guard let sessions = try? modelContext.fetch(descriptor) else { return }
 
+        var latestPerProject: [String: SessionUsage] = [:]
         for session in sessions {
-            guard session.source == source else { continue }
-            session.isActive = false
-
-            if activeProjects.contains(session.projectName) {
-                let projectSessions = sessions
-                    .filter { $0.projectName == session.projectName && $0.source == source }
-                    .sorted { $0.lastTime > $1.lastTime }
-                if projectSessions.first?.sessionId == session.sessionId {
-                    session.isActive = true
+            if let current = latestPerProject[session.projectName] {
+                if session.lastTime > current.lastTime {
+                    latestPerProject[session.projectName] = session
                 }
+            } else {
+                latestPerProject[session.projectName] = session
             }
+        }
+
+        for session in sessions {
+            let isInActive = activeProjects.contains(session.projectName)
+            let isNewest = latestPerProject[session.projectName]?.sessionId == session.sessionId
+            session.isActive = isInActive && isNewest
         }
         try? modelContext.save()
     }

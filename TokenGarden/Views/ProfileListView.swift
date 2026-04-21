@@ -20,6 +20,13 @@ struct ProfileListView: View {
                     .foregroundStyle(.red)
             }
 
+            if let switchError = profileManager.switchError {
+                Text(switchError)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             // Profile list
             if profiles.isEmpty {
                 Text("No profiles saved")
@@ -34,6 +41,7 @@ struct ProfileListView: View {
                             profile: profile,
                             monthlyTokens: profileManager.monthlyTokens(for: profile.name),
                             usageLimits: profileManager.usageLimitsCache[profile.name],
+                            isLoadingLimits: profileManager.loadingProfiles.contains(profile.name),
                             onRename: { newName in
                                 if profileManager.renameProfile(from: profile.name, to: newName) {
                                     errorMessage = nil
@@ -167,6 +175,7 @@ private struct ProfileRow: View {
     let profile: Profile
     let monthlyTokens: Int
     let usageLimits: UsageLimits?
+    let isLoadingLimits: Bool
     let onRename: (String) -> Void
     let onSwitch: () -> Void
     let onDelete: () -> Void
@@ -263,6 +272,9 @@ private struct ProfileRow: View {
                     utilization: limits.sevenDayUtilization,
                     resetLabel: resetLabel(for: limits.sevenDayResetAt)
                 )
+            } else if isLoadingLimits {
+                ShimmerUsageRow(label: "5h session")
+                ShimmerUsageRow(label: "7d week")
             } else {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
@@ -304,6 +316,36 @@ private struct ProfileRow: View {
         guard !trimmedName.isEmpty else { return }
         onRename(trimmedName)
         isEditingName = false
+    }
+}
+
+private struct ShimmerUsageRow: View {
+    let label: String
+    @State private var shimmerPhase: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.secondary.opacity(shimmerPhase ? 0.25 : 0.12))
+                    .frame(width: 48, height: 8)
+            }
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.secondary.opacity(shimmerPhase ? 0.25 : 0.12))
+                .frame(height: 4)
+            RoundedRectangle(cornerRadius: 2)
+                .fill(Color.secondary.opacity(shimmerPhase ? 0.18 : 0.08))
+                .frame(width: 80, height: 7)
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) {
+                shimmerPhase = true
+            }
+        }
     }
 }
 

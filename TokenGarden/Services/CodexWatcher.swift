@@ -17,6 +17,14 @@ struct CodexAccount {
     let authData: Data  // full auth.json content
 }
 
+struct CodexUsageLimits {
+    let fiveHourUtilization: Double   // 0.0–1.0
+    let fiveHourResetAt: Date
+    let sevenDayUtilization: Double   // 0.0–1.0
+    let sevenDayResetAt: Date
+    let fetchedAt: Date = Date()
+}
+
 @MainActor
 class CodexWatcher {
     private let dbPath = NSHomeDirectory() + "/.codex/state_5.sqlite"
@@ -75,6 +83,59 @@ class CodexWatcher {
         UserDefaults.standard.removeObject(forKey: "CodexWatcherThreadTokenSnapshots")
     }
 
+    /// Fetches rate limit utilization from chatgpt.com/api/codex/usage using the stored access token.
+    nonisolated static func fetchUsageLimits() async -> CodexUsageLimits? {
+        let authPath = NSHomeDirectory() + "/.codex/auth.json"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: authPath)),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tokens = json["tokens"] as? [String: Any],
+              let accessToken = tokens["access_token"] as? String,
+              let url = URL(string: "https://chatgpt.com/api/codex/usage")
+        else { return nil }
+
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        guard let (responseData, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              http.statusCode == 200,
+              let body = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+              let rateLimitInfo = body["rate_limit"] as? [String: Any],
+              let primary = rateLimitInfo["primary_window"] as? [String: Any],
+              let secondary = rateLimitInfo["secondary_window"] as? [String: Any]
+        else { return nil }
+
+        let fiveUtil = (primary["used_percent"] as? Double ?? 0) / 100.0
+        let sevenUtil = (secondary["used_percent"] as? Double ?? 0) / 100.0
+
+        let fiveResetAt: Date
+        if let ts = primary["reset_at"] as? Double {
+            fiveResetAt = Date(timeIntervalSince1970: ts)
+        } else if let ts = primary["reset_at"] as? String, let d = ISO8601DateFormatter().date(from: ts) {
+            fiveResetAt = d
+        } else {
+            fiveResetAt = Date().addingTimeInterval(5 * 3600)
+        }
+
+        let sevenResetAt: Date
+        if let ts = secondary["reset_at"] as? Double {
+            sevenResetAt = Date(timeIntervalSince1970: ts)
+        } else if let ts = secondary["reset_at"] as? String, let d = ISO8601DateFormatter().date(from: ts) {
+            sevenResetAt = d
+        } else {
+            sevenResetAt = Date().addingTimeInterval(7 * 24 * 3600)
+        }
+
+        return CodexUsageLimits(
+            fiveHourUtilization: fiveUtil,
+            fiveHourResetAt: fiveResetAt,
+            sevenDayUtilization: sevenUtil,
+            sevenDayResetAt: sevenResetAt
+        )
+    }
+
     // MARK: - Poll
 
     private func poll() {
@@ -114,7 +175,11 @@ class CodexWatcher {
             return ([], previousSnapshots)
         }
         var db: OpaquePointer?
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK else {
+        // Use URI with immutable=1 so SQLite skips WAL file creation in read-only mode.
+        // Without this, SQLite prints "cannot open sqlite-wal" warnings to stderr when
+        // the WAL file doesn't exist (e.g. after a clean DB checkpoint).
+        let uri = "file:\(path)?immutable=1&mode=ro"
+        guard sqlite3_open_v2(uri, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_URI, nil) == SQLITE_OK else {
             return ([], previousSnapshots)
         }
         defer { sqlite3_close(db) }

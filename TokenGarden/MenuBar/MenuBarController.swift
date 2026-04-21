@@ -14,6 +14,15 @@ class MenuBarController: ObservableObject {
     private var bucketHours: [Int] = [-1, -1, -1]
     private var lastKnownDay: Date = .distantPast
 
+    /// Animation freezes while `Date() - lastActivityAt >= idleThreshold`.
+    private var lastActivityAt: Date = .distantPast
+    static let idleThreshold: TimeInterval = 60
+
+    /// Exposed for tests — whether the animation should currently advance.
+    var isAnimating: Bool {
+        Date().timeIntervalSince(lastActivityAt) < Self.idleThreshold
+    }
+
     init(
         statusItem: NSStatusItem,
         initialTodayTokens: Int = 0,
@@ -40,6 +49,7 @@ class MenuBarController: ObservableObject {
         let cal = Calendar.current
         guard cal.isDateInToday(timestamp) else { return }
         todayTokens += tokens
+        lastActivityAt = Date()
         refreshBucketHours()
         let hour = cal.component(.hour, from: timestamp)
         if let idx = bucketHours.firstIndex(of: hour) {
@@ -57,11 +67,21 @@ class MenuBarController: ObservableObject {
         updateDisplay()
     }
 
-    /// Called by AppDelegate's timer on every tick
+    /// Called by AppDelegate's 0.5s timer. Skips the NSImage regeneration
+    /// while idle, but still refreshes hour buckets so the mini graph
+    /// stays correct across hour boundaries.
     func tick() {
-        currentFrame = (currentFrame + 1) % AnimationFrames.frameCount
+        let wasAnimating = isAnimating
+        if wasAnimating {
+            currentFrame = (currentFrame + 1) % AnimationFrames.frameCount
+        }
+        let previousBuckets = hourlyBuckets
+        let previousHours = bucketHours
         refreshBucketHours()
-        updateDisplay()
+        let bucketsChanged = previousBuckets != hourlyBuckets || previousHours != bucketHours
+        if wasAnimating || bucketsChanged {
+            updateDisplay()
+        }
     }
 
     // MARK: - Private

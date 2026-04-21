@@ -45,6 +45,7 @@ class Profile {
     var createdAt: Date
     var monthlyLimit: Int
     var colorName: String
+    var oauthAccountJSON: Data = Data()
 
     init(name: String, email: String, plan: String, credentialsJSON: Data) {
         self.name = name
@@ -55,6 +56,7 @@ class Profile {
         self.createdAt = Date()
         self.monthlyLimit = PlanLimit.defaultLimit(for: plan)
         self.colorName = ProfileColor.blue.rawValue
+        self.oauthAccountJSON = Data()
     }
 
     var profileColor: Color {

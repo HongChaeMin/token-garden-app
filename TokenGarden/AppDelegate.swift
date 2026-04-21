@@ -15,12 +15,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var animationTimer: Timer!
     private var updateChecker: UpdateChecker!
     private var profileManager: ProfileManager!
+    private var overviewViewModel: OverviewViewModel!
     private var activeProfileObserver: NSObjectProtocol?
+    private var profileRegistryObserver: NSObjectProtocol?
+    private var usagePrefetchTimer: Timer?
 
-    // Session refresh: background thread writes, main thread reads
+    // Session refresh: background task writes, main thread reads
     private let refreshLock = NSLock()
     private nonisolated(unsafe) var pendingClaudeProjects: Set<String>?
     private nonisolated(unsafe) var pendingCodexProjects: Set<String>?
+    private var sessionRefreshTask: Task<Void, Never>?
     private var lastBalancedSessionId: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -44,19 +48,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             modelContainer = try ModelContainer(for: schema, configurations: [config])
         } catch {
-            // Backup profiles before reset
+            // Backup profiles before reset — checkpoints WAL so recently-saved rows are visible
             let backup = Self.backupProfiles(from: storeURL)
 
-            // New model added — reset store and backfill offsets to rebuild from logs
-            let storeDir = storeURL.deletingLastPathComponent()
-            try? FileManager.default.removeItem(at: storeDir)
-            try? FileManager.default.createDirectory(at: storeDir, withIntermediateDirectories: true)
+            // Archive (not delete) the existing store so profiles are never silently lost.
+            // If backup couldn't trust the DB (missing file, schema mismatch, open failure),
+            // the original files survive under a timestamped `.corrupted-*` suffix for manual recovery.
+            Self.archiveStoreFiles(at: storeURL)
+            try? FileManager.default.createDirectory(at: storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             UserDefaults.standard.removeObject(forKey: "LogWatcherOffsets")
             CodexWatcher.clearSnapshots()
-            modelContainer = try! ModelContainer(for: schema, configurations: [config])
 
-            // Restore profiles after reset
-            Self.restoreProfiles(backup, into: modelContainer.mainContext)
+            do {
+                modelContainer = try ModelContainer(for: schema, configurations: [config])
+            } catch {
+                let alert = NSAlert()
+                alert.alertStyle = .critical
+                alert.messageText = "TokenGarden couldn’t rebuild its data store."
+                alert.informativeText = "The existing store was archived for manual recovery, but creating a new store still failed.\n\nError: \(error.localizedDescription)"
+                alert.runModal()
+                NSApp.terminate(nil)
+                return
+            }
+            // Only restore when the backup is trustworthy — skip on missing file,
+            // schema mismatch, or open failure, where the archived `.corrupted-*`
+            // files are the authoritative source for manual recovery.
+            if backup.didReadDatabase {
+                Self.restoreProfiles(backup, into: modelContainer.mainContext)
+            }
         }
         dataStore = TokenDataStore(modelContainer: modelContainer)
         Self.restoreCodexProfiles(into: modelContainer.mainContext)
@@ -74,11 +93,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] notification in
             if let name = notification.userInfo?["profileName"] as? String {
                 Task { @MainActor [weak self] in
+                    self?.dataStore.invalidateEmailCache()
                     self?.dataStore.activeProfileName = name
                 }
             }
         }
+        profileRegistryObserver = NotificationCenter.default.addObserver(
+            forName: .profileRegistryDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.dataStore.updateProfileRegistry(self.profileManager.allProfiles())
+            }
+        }
+        profileManager.syncOnLaunch()
         profileManager.prefetchAllUsageLimits()
+        usagePrefetchTimer = Timer.scheduledTimer(withTimeInterval: 180, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.profileManager.prefetchAllUsageLimits()
+            }
+        }
 
         // Status Item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -105,6 +141,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateChecker = UpdateChecker()
         updateChecker.check()
 
+        // Overview ViewModel — loads snapshot in background before the popover opens.
+        overviewViewModel = OverviewViewModel(modelContainer: modelContainer)
+        overviewViewModel.start()
+
         // Popover
         popover = NSPopover()
         popover.behavior = .transient
@@ -113,6 +153,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(menuBarController)
             .environmentObject(updateChecker)
             .environmentObject(profileManager)
+            .environment(overviewViewModel)
             .modelContainer(modelContainer)
         let hostingController = NSHostingController(rootView: popoverView)
         hostingController.sizingOptions = .preferredContentSize
@@ -124,6 +165,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let event = parser.parse(logLine: line) else { return }
             self?.dataStore.record(event)
             self?.menuBarController.onTokenEvent(event)
+            self?.overviewViewModel.onTokenEvent()
 
             // Auto-balance only when session changes
             if let sessionId = event.sessionId,
@@ -151,6 +193,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ).first?.totalTokens ?? 0
             let hourlyBuckets = self?.dataStore.fetchHourlyBuckets() ?? [0, 0, 0]
             self?.menuBarController.reloadData(todayTokens: todayTokens, hourlyBuckets: hourlyBuckets)
+            self?.overviewViewModel.refresh()
         }
 
 
@@ -160,6 +203,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         codexWatcher = CodexWatcher { [weak self] event in
             self?.dataStore.recordCodex(event)
             self?.menuBarController.onTokenUsage(at: event.updatedAt, tokens: event.tokensUsed)
+            self?.overviewViewModel.onTokenEvent()
         }
         // Migrate legacy Codex placeholder profileName records to "Codex/<email>"
         if let email = CodexWatcher.currentAccount()?.email {
@@ -174,8 +218,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        sessionRefreshTask?.cancel()
         if let activeProfileObserver {
             NotificationCenter.default.removeObserver(activeProfileObserver)
+        }
+        if let profileRegistryObserver {
+            NotificationCenter.default.removeObserver(profileRegistryObserver)
         }
     }
 
@@ -193,20 +241,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Session Refresh (background → main via polling)
 
+    /// Cancelled from `applicationWillTerminate` — see `sessionRefreshTask`.
     private func startSessionRefreshLoop() {
-        Thread.detachNewThread { [weak self] in
-
-            while true {
+        sessionRefreshTask = Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
                 let claudeProjects = TokenDataStore.getActiveClaudeProjects()
                 let codexProjects = TokenDataStore.getActiveCodexProjects()
 
-                self?.refreshLock.lock()
-                self?.pendingClaudeProjects = claudeProjects
-                self?.pendingCodexProjects = codexProjects
-                self?.refreshLock.unlock()
-                Thread.sleep(forTimeInterval: 30)
+                self?.storePendingProjects(claude: claudeProjects, codex: codexProjects)
+
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch {
+                    // Cancellation — exit loop.
+                    break
+                }
             }
         }
+    }
+
+    /// Non-async wrapper — `NSLock.lock()` is unavailable from async contexts.
+    private nonisolated func storePendingProjects(claude: Set<String>, codex: Set<String>) {
+        refreshLock.lock()
+        defer { refreshLock.unlock() }
+        pendingClaudeProjects = claude
+        pendingCodexProjects = codex
     }
 
     private func applyPendingRefreshIfNeeded() {
@@ -229,7 +288,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Profile Backup/Restore (survives DB reset)
 
-    private struct ProfileBackup: Codable {
+    struct ProfileBackup: Codable {
         let name: String
         let email: String
         let plan: String
@@ -239,30 +298,78 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let colorName: String
     }
 
-    private struct CodexProfileBackup: Codable {
+    struct CodexProfileBackup: Codable {
         let name: String
         let email: String
         let authData: Data
         let isActive: Bool
     }
 
-    private struct ProfileRestoreBackup {
+    struct ProfileRestoreBackup {
         let claudeProfiles: [ProfileBackup]
         let codexProfiles: [CodexProfileBackup]
+        // True only if we could open the store AND at least one expected table was queryable.
+        // When false, callers must treat the backup as non-authoritative.
+        let didReadDatabase: Bool
     }
 
-    private static func backupProfiles(from storeURL: URL) -> ProfileRestoreBackup {
-        // Read profiles directly via SQLite before DB is destroyed
+    static func backupProfiles(from storeURL: URL) -> ProfileRestoreBackup {
+        // Store file missing entirely — nothing to back up, not authoritative.
+        guard FileManager.default.fileExists(atPath: storeURL.path) else {
+            return ProfileRestoreBackup(claudeProfiles: [], codexProfiles: [], didReadDatabase: false)
+        }
+
         var db: OpaquePointer?
         guard sqlite3_open(storeURL.path, &db) == SQLITE_OK else {
-            return ProfileRestoreBackup(claudeProfiles: [], codexProfiles: [])
+            return ProfileRestoreBackup(claudeProfiles: [], codexProfiles: [], didReadDatabase: false)
         }
         defer { sqlite3_close(db) }
 
+        // CRITICAL: Without this, rows written right before a crash live only in the WAL file
+        // and are invisible to plain SELECTs, producing a false "no profiles" result.
+        sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE);", nil, nil, nil)
+
+        let hasClaudeTable = tableExists(db: db, name: "ZPROFILE")
+        let hasCodexTable = tableExists(db: db, name: "ZCODEXPROFILE")
+        let didReadDatabase = hasClaudeTable || hasCodexTable
+
         return ProfileRestoreBackup(
-            claudeProfiles: backupClaudeProfiles(from: db),
-            codexProfiles: backupCodexProfiles(from: db)
+            claudeProfiles: hasClaudeTable ? backupClaudeProfiles(from: db) : [],
+            codexProfiles: hasCodexTable ? backupCodexProfiles(from: db) : [],
+            didReadDatabase: didReadDatabase
         )
+    }
+
+    private static func tableExists(db: OpaquePointer?, name: String) -> Bool {
+        var stmt: OpaquePointer?
+        let sql = "SELECT name FROM sqlite_master WHERE type='table' AND name=?"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(stmt) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        sqlite3_bind_text(stmt, 1, name, -1, transient)
+        return sqlite3_step(stmt) == SQLITE_ROW
+    }
+
+    // Renames store / -shm / -wal to .corrupted-<iso> siblings rather than deleting,
+    // so profile loss cannot happen silently. SQLite names the sidecar files with a dash
+    // (`store-wal`, `store-shm`), not a dot — `appendingPathExtension` would produce the
+    // wrong paths, so we build them via string concatenation.
+    static func archiveStoreFiles(at storeURL: URL) {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let suffix = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let fm = FileManager.default
+        let dir = storeURL.deletingLastPathComponent()
+        let base = storeURL.lastPathComponent
+        let siblings = [
+            storeURL,
+            dir.appendingPathComponent("\(base)-shm"),
+            dir.appendingPathComponent("\(base)-wal"),
+        ]
+        for url in siblings where fm.fileExists(atPath: url.path) {
+            let archived = dir.appendingPathComponent("\(url.lastPathComponent).corrupted-\(suffix)")
+            try? fm.moveItem(at: url, to: archived)
+        }
     }
 
     private static func backupClaudeProfiles(from db: OpaquePointer?) -> [ProfileBackup] {
