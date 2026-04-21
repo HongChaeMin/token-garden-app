@@ -16,11 +16,15 @@ final class BreakdownLoader: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
 
+    private var currentTask: Task<Void, Never>?
+
     func load(window: TimeWindow) {
+        currentTask?.cancel()
         isLoading = true
         errorMessage = nil
-        Task.detached(priority: .userInitiated) { [weak self] in
+        currentTask = Task.detached(priority: .userInitiated) { [weak self] in
             let result = Self.compute(window: window)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self else { return }
                 self.isLoading = false
