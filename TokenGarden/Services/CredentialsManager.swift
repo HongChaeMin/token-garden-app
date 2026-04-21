@@ -221,6 +221,48 @@ struct CredentialsManager {
         return token
     }
 
+    /// Extracts the refresh token from stored credentials JSON
+    static func refreshToken(from credentialsJSON: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: credentialsJSON) as? [String: Any],
+              let oauth = json["claudeAiOauth"] as? [String: Any],
+              let token = oauth["refreshToken"] as? String
+        else { return nil }
+        return token
+    }
+
+    struct OAuthRefreshResult {
+        let accessToken: String
+        let refreshToken: String?
+    }
+
+    /// Refreshes an OAuth access token using its refresh token via the Anthropic OAuth endpoint.
+    /// Works for any profile — does not require keychain or CLI access.
+    /// Returns both the new access token and a new refresh token (if provided).
+    nonisolated static func refreshOAuthTokenViaAPI(refreshToken: String) async -> OAuthRefreshResult? {
+        guard let url = URL(string: "https://api.anthropic.com/v1/oauth/token") else { return nil }
+
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        var components = URLComponents()
+        components.queryItems = [
+            URLQueryItem(name: "grant_type", value: "refresh_token"),
+            URLQueryItem(name: "refresh_token", value: refreshToken),
+            URLQueryItem(name: "client_id", value: "9d1c250a-e61b-44d9-88ed-5944d1962f5e"),
+            URLQueryItem(name: "scope", value: "user:inference user:profile"),
+        ]
+        request.httpBody = components.percentEncodedQuery?.data(using: .utf8)
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let accessToken = json["access_token"] as? String
+        else { return nil }
+
+        let newRefreshToken = json["refresh_token"] as? String
+        return OAuthRefreshResult(accessToken: accessToken, refreshToken: newRefreshToken)
+    }
+
     /// Fetches real-time rate limit utilization via a minimal API call.
     /// Parses `anthropic-ratelimit-unified-*` response headers. Returns nil on
     /// any failure — callers do not currently retry on expired tokens.
