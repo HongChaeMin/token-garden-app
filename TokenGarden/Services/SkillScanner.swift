@@ -145,7 +145,8 @@ struct SkillScanner {
         )
     }
 
-    /// Tiny YAML-ish parser — supports `key: value` on single lines only.
+    /// Tiny YAML-ish parser — supports `key: value` entries plus indented
+    /// continuation lines, which are appended to the previous key's value.
     /// Quoted values have outer quotes stripped.
     static func parseFrontmatter(_ text: String) -> (meta: [String: String], body: String) {
         guard text.hasPrefix("---") else { return ([:], text) }
